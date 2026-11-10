@@ -3,6 +3,7 @@
 import { db, uid, type AuditEntry, type Product, type Sale, type SaleItem } from './db';
 import { config } from './config';
 import { currentLocationId } from './location';
+import { makeNumber, numberPrefix } from './numbering';
 import { recordMovement } from './stock';
 
 export async function queue(entity: string, op: string, payload: unknown): Promise<void> {
@@ -112,9 +113,9 @@ export async function checkout(input: CheckoutInput): Promise<Sale> {
       }
       lines.push({ productId, name: p.name, qty, price: p.price });
     }
-    const count = await db.sales.count();
-    const d = new Date();
-    const number = `INV-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(count + 1).padStart(4, '0')}`;
+    const now = Date.now();
+    const prefix = numberPrefix('INV', now);
+    const number = makeNumber('INV', now, await db.sales.where('at').aboveOrEqual(startOfDay(now)).filter((s) => s.number.startsWith(prefix)).count());
     const total = lines.reduce((s, l) => s + l.qty * l.price, 0);
     const customerName = (input.customerName ?? '').trim();
     if (customerName) {

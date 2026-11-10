@@ -3,6 +3,7 @@
 import { db, uid, type Purchase, type Supplier } from './db';
 import { queue } from './actions';
 import { currentLocationId } from './location';
+import { makeNumber, numberPrefix, startOfDay } from './numbering';
 import { recordMovement } from './stock';
 
 export async function addSupplier(name: string, phone = ''): Promise<Supplier> {
@@ -47,11 +48,11 @@ export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
     const total = lines.reduce((s, l) => s + l.qty * l.cost, 0);
     const paid = Math.min(Math.max(input.paid ?? 0, 0), total);
     const at = Date.now();
-    const d = new Date(at);
-    const count = await db.purchases.count();
+    const prefix = numberPrefix('PO', at);
+    const made = await db.purchases.where('at').aboveOrEqual(startOfDay(at)).filter((x) => x.number.startsWith(prefix)).count();
     const purchase: Purchase = {
       id: uid(),
-      number: `PO-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(count + 1).padStart(4, '0')}`,
+      number: makeNumber('PO', at, made),
       at,
       supplierId: supplier.id,
       supplierName: supplier.name,

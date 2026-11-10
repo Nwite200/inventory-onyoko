@@ -1,7 +1,8 @@
 // Keeps this device and the server in step: push local changes, then pull other devices' changes.
 // Works in the background; the app never waits for it, so selling continues offline.
-import { db, uid } from './db';
+import { db } from './db';
 import { api, ApiError, getSession, logout, serverBase, serverMode } from './auth';
+import { getDeviceId } from './numbering';
 import { applyChanges, undoRefused, type RemoteChange } from './syncApply';
 
 export const SYNC_EVENT = 'openpos-sync';
@@ -15,15 +16,7 @@ export interface SyncResult {
 
 export const syncStatus = { at: 0, error: '' };
 
-export function getDeviceId(): string {
-  const key = 'openpos.deviceId';
-  let id = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
-  if (!id) {
-    id = uid();
-    if (typeof localStorage !== 'undefined') localStorage.setItem(key, id);
-  }
-  return id;
-}
+export { getDeviceId };
 
 const cursorKey = (): string => `openpos.cursor.${serverBase()}`;
 const getCursor = (): number => Number(localStorage.getItem(cursorKey()) ?? 0) || 0;

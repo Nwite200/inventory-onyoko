@@ -8,7 +8,7 @@ All code is original; it is a clean-room build, not a copy of any existing POS.
 ```bash
 npm install
 npm run dev        # development
-npm test           # 174 tests (voice, offline speech model, server, multi-shop sync, receipt printer, browser-compatibility guard)
+npm test           # 179 tests (voice, offline speech model, server, multi-shop sync, receipt printer, browser-compatibility guard)
 npm run get-model  # one-time: install the offline speech model (about 100 MB) for on-device voice
 npm run build      # production build in dist/ (installable PWA)
 npm run preview    # serve the production build
@@ -84,7 +84,7 @@ How it works: it listens until you pause, then the model writes down what you sa
 5. A device that stays offline with unsent changes after its account is disabled loses those changes (they are refused).
 6. The Ollama and Gemini adapters (`src/voice/llm.ts`) are untested against the live services. Check the model names in Settings.
 7. **Receipt printing is tested against a decoder and simulated printers, not real hardware.** The receipt layout and commands are verified byte by byte, and the USB, serial, Bluetooth LE and RawBT code was exercised with simulated devices, but no real printer was available. Try "Print test page" first. Direct USB/serial/Bluetooth printing works only in Chrome/Edge, over https. Bluetooth LE only finds printers that use one of the common printing services (listed in `src/printing/transport.ts`); a printer that does not show up should be used through RawBT or the normal print dialog. The RawBT hand-off follows RawBT's published `rawbt:` link format; Android may want a tap on the page before it opens RawBT, so if a receipt does not print by itself after a sale, tap "Print receipt". iPhone: only the normal print dialog (Safari has no USB/serial/Bluetooth access).
-8. **Shops:** a device's shop is chosen by a manager/owner in Settings (cashiers see it but cannot change it). The server does not check that a "Goods arrived" tap came from the receiving shop's device; it checks that the transfer was really sent and uses the quantities that were sent. Sale numbers can repeat between devices.
+8. **Shops:** a device's shop is chosen by a manager/owner in Settings (cashiers see it but cannot change it). The server does not check that a "Goods arrived" tap came from the receiving shop's device; it checks that the transfer was really sent and uses the quantities that were sent.
 9. A change the server refuses (for example a cashier's stock adjustment) is taken back out on that device, and recorded in the audit log.
 10. Voice for purchases, suppliers and transfers works for the phrasings above (tested with typed text through the same parser; real accents and unusual wording are untested like the rest of voice). Anything it does not understand is simply not done, and every action is read back and needs "yes".
 11. Not built: multi-business, label printing, translations.
@@ -93,6 +93,8 @@ How it works: it listens until you pause, then the model writes down what you sa
 
 1. Edit `public/config.json` (name, colour, currency…) or set it in Settings and use "Download config.json".
 2. Easiest: run the server (above) on a small VPS or a PC in the shop with Docker. For one device only, `npm run build` and host `dist/` on any static host over HTTPS (needed for the PWA and microphone).
+
+Receipt, purchase and transfer numbers include a short code for the device that made them (for example `INV-20261110-K7F-0003`), so two tills never print the same number.
 
 ## Layout
 

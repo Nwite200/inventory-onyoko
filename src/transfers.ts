@@ -4,6 +4,7 @@
 import { db, uid, type Transfer } from './db';
 import { queue } from './actions';
 import { currentLocationId, listLocations } from './location';
+import { makeNumber, numberPrefix, startOfDay } from './numbering';
 import { recordMovement } from './stock';
 import { config } from './config';
 
@@ -27,11 +28,11 @@ export async function sendTransfer(input: { toLocationId: string; items: { produ
       items.push({ productId, name: p.name, qty });
     }
     const sentAt = Date.now();
-    const d = new Date(sentAt);
-    const count = await db.transfers.count();
+    const prefix = numberPrefix('TR', sentAt);
+    const made = await db.transfers.where('sentAt').aboveOrEqual(startOfDay(sentAt)).filter((x) => x.number.startsWith(prefix)).count();
     const t: Transfer = {
       id: uid(),
-      number: `TR-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(count + 1).padStart(4, '0')}`,
+      number: makeNumber('TR', sentAt, made),
       fromLocationId: from,
       toLocationId: input.toLocationId,
       items,
