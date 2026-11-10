@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+*.db*
+public/models
+public/ort
+
+# local certificates and keys
+*.key
+*.crt
+*.pem
+tls/

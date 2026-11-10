@@ -1,0 +1,22 @@
+services:
+  openpos:
+    build: .
+    ports:
+      - "8787:8787"   # the app (https once a certificate exists)
+      - "8788:8788"   # plain-http page where devices download the shop certificate
+    volumes:
+      - openpos-data:/data
+    # To turn on https (needed for voice on other devices), once the container is running:
+    #   docker compose exec openpos node scripts/make-cert.mjs 192.168.1.20     (your server's LAN address)
+    #   docker compose restart openpos
+    # Then on each device open http://192.168.1.20:8788 and follow the steps.
+    environment:
+      # Optional: create the first admin automatically (otherwise the app asks on first visit)
+      # ADMIN_USER: owner
+      # ADMIN_PASSWORD: change-me-please
+      # Optional: keep sessions valid across database resets
+      # AUTH_SECRET: a-long-random-string
+      PORT: 8787
+    restart: unless-stopped
+volumes:
+  openpos-data:
