@@ -39,6 +39,8 @@ export interface AppConfig {
   currencySymbol: string;
   locale: string;
   speechLang: string;
+  /** screen language: en, ha (Hausa), yo (Yoruba), ig (Igbo), pcm (Pidgin) */
+  language: string;
   /** auto = browser recognition when online, on-device when offline */
   speechEngine: 'auto' | 'browser' | 'offline';
   preset: 'retail' | 'restaurant' | 'pharmacy' | 'custom';
@@ -56,6 +58,7 @@ export const defaultConfig: AppConfig = {
   currencySymbol: '₦',
   locale: 'en-NG',
   speechLang: 'en-NG',
+  language: 'en',
   speechEngine: 'auto',
   preset: 'retail',
   allowNegativeStock: false,

@@ -295,3 +295,21 @@ describe('who and what is allowed', () => {
     expect((await agent.handle('how much do I owe')).text).toMatch(/switched off/);
   });
 });
+
+describe('expiry by voice', () => {
+  it('says nothing is expiring, then reads out expired and soon-to-expire goods', async () => {
+    expect((await agent.handle("what's expiring")).text).toMatch(/nothing has expired/i);
+    const { addLot } = await import('../lots');
+    const rice = (await db.products.toArray()).find((p) => p.name.startsWith('Rice'))!;
+    const sugar = (await db.products.toArray()).find((p) => p.name.startsWith('Sugar'))!;
+    await addLot({ productId: rice.id, qty: 5, expiresAt: Date.now() - 86_400_000 });
+    await addLot({ productId: sugar.id, qty: 4, expiresAt: Date.now() + 5 * 86_400_000 });
+    const r = (await agent.handle('what has expired')).text;
+    expect(r).toMatch(/1 already expired: Rice/);
+    expect(r).toMatch(/1 expiring within 30 days: Sugar/);
+  });
+  it('is allowed for cashiers too', async () => {
+    role = 'cashier';
+    expect((await agent.handle("what's expiring")).text).not.toMatch(/not allowed|can't|cannot/i);
+  });
+});

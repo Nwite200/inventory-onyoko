@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { config, saveConfig } from '../config';
 import { authStatus, login, serverBase, setupAdmin } from '../auth';
+import { t } from '../i18n';
 
 export function Login({ onServerChange }: { onServerChange: () => void }) {
   const [server, setServer] = useState(config.serverUrl);
@@ -49,28 +50,28 @@ export function Login({ onServerChange }: { onServerChange: () => void }) {
     <div className="login">
       <form className="card form" onSubmit={submit}>
         <h2>{config.appName}</h2>
-        <p className="muted small">{needsSetup ? 'First time here: create the owner (admin) account.' : 'Sign in to continue.'}</p>
+        <p className="muted small">{needsSetup ? t('login.firstTime') : t('login.signInToContinue')}</p>
         <label>
-          Username
+          {t('login.username')}
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required />
         </label>
         <label>
-          Password {needsSetup && <span className="small">(at least 8 characters)</span>}
+          {t('login.password')} {needsSetup && <span className="small">{t('login.atLeast8')}</span>}
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={needsSetup ? 'new-password' : 'current-password'} required />
         </label>
         {error && <p className="error">{error}</p>}
         <button className="primary big" disabled={busy || needsSetup === null}>
-          {needsSetup ? 'Create admin account' : 'Sign in'}
+          {needsSetup ? t('login.create') : t('login.signIn')}
         </button>
         <details>
-          <summary className="small muted">Server address</summary>
+          <summary className="small muted">{t('login.server')}</summary>
           <div className="form">
             <input value={server} onChange={(e) => setServer(e.target.value)} placeholder="http://192.168.1.10:8787" />
             <div className="row-btns">
-              <button type="button" onClick={applyServer} disabled={server.trim() === serverBase()}>Use this server</button>
-              <button type="button" onClick={() => setServer(window.location.origin)}>This website</button>
+              <button type="button" onClick={applyServer} disabled={server.trim() === serverBase()}>{t('login.useServer')}</button>
+              <button type="button" onClick={() => setServer(window.location.origin)}>{t('login.thisWebsite')}</button>
               <button type="button" className="danger" onClick={() => { setServer(''); saveConfig({ serverUrl: '' }); onServerChange(); }}>
-                Work without a server
+                {t('login.noServer')}
               </button>
             </div>
           </div>

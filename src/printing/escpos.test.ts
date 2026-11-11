@@ -188,3 +188,19 @@ describe('USB and serial transports (against mocks, not real hardware)', () => {
     await expect(connectPrinter('usb')).rejects.toThrow(/Chrome or Edge/);
   });
 });
+
+describe('barcode command', () => {
+  it('encodes GS h / w / H / k 73 with the {B prefix and a correct length', () => {
+    const b = [...new EscPos(32).barcode('OP-1234', { height: 70, width: 3 }).bytes()];
+    expect(b.slice(0, 9)).toEqual([0x1d, 0x68, 70, 0x1d, 0x77, 3, 0x1d, 0x48, 2]);
+    expect(b.slice(9, 13)).toEqual([0x1d, 0x6b, 73, 9]); // "{B" + 7 characters
+    expect(String.fromCharCode(...b.slice(13))).toBe('{BOP-1234');
+  });
+  it('can hide the number under the bars, and limits width/height to what printers accept', () => {
+    const b = [...new EscPos(32).barcode('A', { textBelow: false, width: 99, height: 0 }).bytes()];
+    expect(b.slice(0, 9)).toEqual([0x1d, 0x68, 1, 0x1d, 0x77, 6, 0x1d, 0x48, 0]);
+  });
+  it('refuses text that is too long', () => {
+    expect(() => new EscPos(32).barcode('x'.repeat(90))).toThrow(/too long/);
+  });
+});

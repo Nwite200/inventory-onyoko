@@ -5,6 +5,7 @@ import { queue } from './actions';
 import { currentLocationId } from './location';
 import { makeNumber, numberPrefix, startOfDay } from './numbering';
 import { recordMovement } from './stock';
+import { addLotInTransaction, removeLotsFor } from './lots';
 
 export async function addSupplier(name: string, phone = ''): Promise<Supplier> {
   const n = name.trim();
@@ -23,7 +24,7 @@ export interface ReceiveInput {
   /** Existing supplier id, or leave empty and give supplierName to create one on the spot. */
   supplierId?: string;
   supplierName?: string;
-  items: { productId: string; qty: number; cost: number }[];
+  items: { productId: string; qty: number; cost: number; batchNo?: string; expiresAt?: number }[];
   /** Money paid to the supplier now. Anything unpaid stays as "owed". */
   paid?: number;
   note?: string;
@@ -38,12 +39,13 @@ export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
   const supplier = input.supplierId ? await db.suppliers.get(input.supplierId) : input.supplierName?.trim() ? await addSupplier(input.supplierName) : undefined;
   if (!supplier) throw new Error('Choose a supplier');
 
-  return db.transaction('rw', [db.products, db.stockMovements, db.suppliers, db.purchases, db.outbox], async () => {
+  return db.transaction('rw', [db.products, db.stockMovements, db.suppliers, db.purchases, db.lots, db.outbox], async () => {
     const lines = [];
     for (const it of input.items) {
       const p = await db.products.get(it.productId);
       if (!p) throw new Error('A product in this purchase no longer exists');
-      lines.push({ productId: p.id, name: p.name, qty: it.qty, cost: it.cost });
+      const batchNo = it.batchNo?.trim();
+      lines.push({ productId: p.id, name: p.name, qty: it.qty, cost: it.cost, ...(batchNo ? { batchNo } : {}), ...(it.expiresAt ? { expiresAt: it.expiresAt } : {}) });
     }
     const total = lines.reduce((s, l) => s + l.qty * l.cost, 0);
     const paid = Math.min(Math.max(input.paid ?? 0, 0), total);
@@ -69,6 +71,7 @@ export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
       await recordMovement({ id: `${purchase.id}:${l.productId}:purchase`, productId: l.productId, delta: l.qty, reason: 'purchase', ref: purchase.id, at, locationId: purchase.locationId });
       const p = (await db.products.get(l.productId))!;
       await db.products.put({ ...p, cost: l.cost, costAt: at });
+      if (l.expiresAt) await addLotInTransaction({ productId: l.productId, qty: l.qty, expiresAt: l.expiresAt, batchNo: l.batchNo, ref: purchase.id, locationId: purchase.locationId, id: `${purchase.id}:${l.productId}:lot` });
     }
     await queue('purchase', 'create', purchase);
     return purchase;
@@ -77,7 +80,7 @@ export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
 
 /** Cancels a purchase: the goods go back out of stock (at the shop that received them). */
 export async function voidPurchase(purchaseId: string): Promise<void> {
-  await db.transaction('rw', [db.products, db.stockMovements, db.purchases, db.outbox], async () => {
+  await db.transaction('rw', [db.products, db.stockMovements, db.purchases, db.lots, db.outbox], async () => {
     const pur = await db.purchases.get(purchaseId);
     if (!pur) throw new Error('Purchase not found');
     if (pur.status === 'voided') throw new Error('Purchase is already cancelled');
@@ -86,6 +89,7 @@ export async function voidPurchase(purchaseId: string): Promise<void> {
       await recordMovement({ id: `${pur.id}:${l.productId}:purchase_void`, productId: l.productId, delta: -l.qty, reason: 'purchase_void', ref: pur.id, at, locationId: pur.locationId });
     }
     await db.purchases.put({ ...pur, status: 'voided' });
+    await removeLotsFor(pur.id);
     // the event carries what is needed to undo the stock, and no prices
     await queue('purchase', 'void', { id: pur.id, locationId: pur.locationId, items: pur.items.map((l) => ({ productId: l.productId, qty: l.qty })) });
   });

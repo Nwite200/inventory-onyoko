@@ -4,7 +4,7 @@
 //  - Records are keyed by client-generated ids, so applying the same change twice does nothing.
 //  - Prices are last-write-wins, using the time the price was set (priceAt).
 // These writes deliberately bypass the outbox, otherwise every change would bounce back to the server forever.
-import { db, type Product, type Purchase, type Sale, type StockMovement, type Transfer } from './db';
+import { db, type Lot, type Product, type Purchase, type Sale, type StockMovement, type Transfer } from './db';
 import { MAIN_LOCATION } from './location';
 import { recordMovement } from './stock';
 
@@ -35,9 +35,11 @@ async function applyOne(c: RemoteChange): Promise<void> {
     }
     case 'product:update': {
       const existing = await db.products.get(p.id);
-      if (existing && c.at >= (existing.priceAt ?? 0)) {
-        await db.products.put({ ...existing, price: p.price, priceAt: c.at, updatedAt: Date.now() });
-      }
+      if (!existing) return;
+      let next = existing;
+      if (typeof p.price === 'number' && c.at >= (existing.priceAt ?? 0)) next = { ...next, price: p.price, priceAt: c.at, updatedAt: Date.now() };
+      if (typeof p.sku === 'string' && c.at >= (existing.skuAt ?? 0)) next = { ...next, sku: p.sku, skuAt: c.at, updatedAt: Date.now() };
+      if (next !== existing) await db.products.put(next);
       return;
     }
     case 'product:delete':
@@ -63,6 +65,14 @@ async function applyOne(c: RemoteChange): Promise<void> {
         await recordMovement({ id: `${sale.id}:${l.productId}:void`, productId: l.productId, delta: l.qty, reason: 'void', ref: sale.id, at: c.at, locationId: sale.locationId });
       }
       await db.sales.put({ ...sale, status: 'voided' });
+      return;
+    }
+    case 'lot:create': {
+      if (!(await db.lots.get(p.id))) await db.lots.add(p as Lot);
+      return;
+    }
+    case 'lot:remove': {
+      await db.lots.delete(p.id);
       return;
     }
     case 'location:create': {
@@ -92,6 +102,7 @@ async function applyOne(c: RemoteChange): Promise<void> {
       }
       const pur = await db.purchases.get(p.id);
       if (pur && pur.status !== 'voided') await db.purchases.put({ ...pur, status: 'voided' });
+      await db.lots.where('ref').equals(p.id).delete();
       return;
     }
     case 'purchase:pay': {
@@ -133,7 +144,7 @@ async function applyOne(c: RemoteChange): Promise<void> {
 }
 
 export async function applyChanges(changes: RemoteChange[]): Promise<void> {
-  await db.transaction('rw', [db.products, db.stockMovements, db.sales, db.customers, db.locations, db.suppliers, db.purchases, db.transfers], async () => {
+  await db.transaction('rw', [db.products, db.stockMovements, db.sales, db.customers, db.locations, db.suppliers, db.purchases, db.transfers, db.lots], async () => {
     for (const c of changes) await applyOne(c);
   });
 }
@@ -145,7 +156,7 @@ export async function applyChanges(changes: RemoteChange[]): Promise<void> {
  */
 export async function undoRefused(entity: string, op: string, payload: Record<string, any>): Promise<void> {
   const key = `${entity}:${op}`;
-  await db.transaction('rw', [db.products, db.stockMovements, db.sales, db.locations, db.suppliers, db.purchases, db.transfers], async () => {
+  await db.transaction('rw', [db.products, db.stockMovements, db.sales, db.locations, db.suppliers, db.purchases, db.transfers, db.lots], async () => {
     const reverse = async (items: { productId: string; qty: number }[], sign: 1 | -1, loc: string, ref: string, tag: string, reason: string) => {
       for (const it of items) {
         await recordMovement({ id: `${ref}:${it.productId}:${tag}`, productId: it.productId, delta: sign * it.qty, reason, ref, at: Date.now(), locationId: loc });
@@ -166,6 +177,9 @@ export async function undoRefused(entity: string, op: string, payload: Record<st
       case 'sale:create':
         await reverse(payload.items, 1, payload.locationId ?? MAIN_LOCATION, payload.id, 'refused', 'refused');
         await db.sales.update(payload.id, { status: 'voided' });
+        break;
+      case 'lot:create':
+        await db.lots.delete(payload.id);
         break;
       case 'location:create':
         await db.locations.delete(payload.id);
@@ -190,5 +204,12 @@ export async function purgeForCashier(): Promise<void> {
     }
     await db.suppliers.clear();
     await db.purchases.clear();
+  });
+}
+
+/** Forgets everything stored on this device (used when a different business signs in). */
+export async function wipeLocalData(): Promise<void> {
+  await db.transaction('rw', db.tables, async () => {
+    for (const table of db.tables) await table.clear();
   });
 }

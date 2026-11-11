@@ -171,3 +171,11 @@ describe('purchases, suppliers and transfers', () => {
     expect(parseCommand('sell two rice to Mama Ade cash')).toMatchObject({ type: 'sell', customer: 'mama ade' });
   });
 });
+
+describe('expiry questions', () => {
+  it('understands what is expiring', () => {
+    for (const s of ["what's expiring", 'what has expired', 'anything going bad', 'what is out of date', 'which goods expire soon']) {
+      expect(parseCommand(s).type, s).toBe('expiring');
+    }
+  });
+});

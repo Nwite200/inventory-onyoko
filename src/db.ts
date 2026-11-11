@@ -15,6 +15,8 @@ export interface Product {
   priceAt?: number;
   /** When the cost was last set (by a purchase); latest wins between devices. */
   costAt?: number;
+  /** When the barcode was last set; latest wins between devices. */
+  skuAt?: number;
 }
 
 export interface StockMovement {
@@ -58,12 +60,28 @@ export interface Supplier {
   phone?: string;
 }
 
+/** A batch of a product with an expiry date. Remaining quantity per lot is worked out from stock (see lots.ts). */
+export interface Lot {
+  id: string;
+  productId: string;
+  locationId: string;
+  qty: number;
+  batchNo?: string;
+  /** end of the expiry day, in ms */
+  expiresAt: number;
+  /** the purchase that brought it in, if any */
+  ref?: string;
+}
+
 export interface PurchaseItem {
   productId: string;
   name: string;
   qty: number;
   /** What the shop paid per unit. */
   cost: number;
+  batchNo?: string;
+  /** expiry day, if the goods have one */
+  expiresAt?: number;
 }
 
 export interface Payment {
@@ -140,6 +158,7 @@ class PosDB extends Dexie {
   suppliers!: Table<Supplier, string>;
   purchases!: Table<Purchase, string>;
   transfers!: Table<Transfer, string>;
+  lots!: Table<Lot, string>;
 
   constructor(name = 'openpos') {
     super(name);
@@ -156,6 +175,9 @@ class PosDB extends Dexie {
       suppliers: 'id, name',
       purchases: 'id, at, supplierId',
       transfers: 'id, status, sentAt',
+    });
+    this.version(3).stores({
+      lots: 'id, productId, expiresAt, ref',
     });
   }
 }

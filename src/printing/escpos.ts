@@ -68,6 +68,21 @@ export class EscPos {
   /** Pulses pin 2: opens a cash drawer plugged into the printer. */
   openDrawer(): this { return this.push(ESC, 0x70, 0x00, 0x19, 0xfa); }
 
+  /**
+   * Prints a Code 128 barcode with the printer's own barcode engine (GS k 73, subset B).
+   * width 2..6 = module width in dots; height in dots; the text under the bars is printed by the printer.
+   */
+  barcode(text: string, opts: { height?: number; width?: number; textBelow?: boolean } = {}): this {
+    const data = '{B' + ascii(text).replace(/[^\x20-\x7e]/g, '?');
+    if (data.length > 82) throw new Error('Barcode text is too long');
+    this.push(GS, 0x68, Math.min(255, Math.max(1, opts.height ?? 60))); // height
+    this.push(GS, 0x77, Math.min(6, Math.max(2, opts.width ?? 2))); // module width
+    this.push(GS, 0x48, opts.textBelow === false ? 0 : 2); // text under the bars (or none)
+    this.push(GS, 0x6b, 73, data.length);
+    for (const ch of data) this.out.push(ch.charCodeAt(0));
+    return this;
+  }
+
   /** Writes text (no line break added). */
   text(s: string): this {
     for (const ch of ascii(s)) this.out.push(ch === '\n' ? LF : ch.charCodeAt(0));

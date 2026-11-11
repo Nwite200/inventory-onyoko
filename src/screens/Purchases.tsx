@@ -48,7 +48,7 @@ export function Purchases() {
       const s = existing ?? (await addSupplier(supplier));
       await receivePurchase({
         supplierId: s.id,
-        items: lines.map((l) => ({ productId: l.productId, qty: l.qty, cost: l.cost ?? 0 })),
+        items: lines.map((l) => ({ productId: l.productId, qty: l.qty, cost: l.cost ?? 0, batchNo: l.batchNo, expiresAt: l.expiresAt })),
         paid: Number(paid) || 0,
         note,
       });

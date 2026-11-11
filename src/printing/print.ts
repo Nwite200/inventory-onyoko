@@ -1,6 +1,6 @@
 import type { Sale } from '../db';
 import { config, formatMoney } from '../config';
-import { buildSaleReceipt, buildTestPage } from './receipt';
+import { buildLabel, buildSaleReceipt, buildTestPage } from './receipt';
 import { savedPrinter, type Transport } from './transport';
 
 const width = (): number => (config.printer.paperMm === 80 ? 48 : 32);
@@ -36,4 +36,12 @@ export async function printSale(sale: Sale, shopName?: string): Promise<void> {
 export async function printTestPage(): Promise<void> {
   const t = await transport();
   await t.write(buildTestPage({ width: width(), businessName: config.appName, cut: config.printer.cut }));
+}
+
+/** Prints price labels (name, barcode, price) one after another on the receipt printer. */
+export async function printLabels(jobs: { item: { name: string; sku: string; price: number }; copies: number }[]): Promise<void> {
+  const t = await transport();
+  for (const j of jobs) {
+    await t.write(buildLabel(j.item, { width: width(), money: formatMoney, copies: j.copies, cut: config.printer.cut }));
+  }
 }

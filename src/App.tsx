@@ -16,6 +16,7 @@ import { VoiceDock } from './screens/VoiceDock';
 import { Login } from './screens/Login';
 import { INSECURE_MESSAGE, isSecure } from './secure';
 import { currentLocationId, listLocations } from './location';
+import { t } from './i18n';
 
 type Tab = 'pos' | 'products' | 'purchases' | 'transfers' | 'sales' | 'reports' | 'settings';
 
@@ -75,22 +76,22 @@ export function App() {
   const f = config.features;
   const canManage = role !== 'cashier';
   const tabs: [Tab, string, boolean][] = [
-    ['pos', 'Sell', true],
-    ['products', 'Products', true],
-    ['purchases', 'Purchases', f.purchases && canManage],
-    ['transfers', 'Transfers', f.transfers && canManage],
-    ['sales', 'Sales', f.sales],
-    ['reports', 'Reports', f.reports],
-    ['settings', 'Settings', true],
+    ['pos', t('nav.sell'), true],
+    ['products', t('nav.products'), true],
+    ['purchases', t('nav.purchases'), f.purchases && canManage],
+    ['transfers', t('nav.transfers'), f.transfers && canManage],
+    ['sales', t('nav.sales'), f.sales],
+    ['reports', t('nav.reports'), f.reports],
+    ['settings', t('nav.settings'), true],
   ];
 
   const syncLabel = !serverOn
-    ? 'Local only'
+    ? t('status.localOnly')
     : syncStatus.error
-      ? 'Sync problem'
+      ? t('status.syncProblem')
       : syncStatus.at
-        ? `Synced ${new Date(syncStatus.at).toLocaleTimeString(config.locale, { hour: '2-digit', minute: '2-digit' })}`
-        : 'Not synced yet';
+        ? t('status.synced', { time: new Date(syncStatus.at).toLocaleTimeString(config.locale, { hour: '2-digit', minute: '2-digit' }) })
+        : t('status.notSynced');
 
   return (
     <div className="app">
@@ -102,14 +103,15 @@ export function App() {
         </div>
         <div className="status">
           {shopName && <span className="pill" title="The shop this device sells for">{shopName}</span>}
-          <span className={`pill ${online ? 'ok' : 'warn'}`}>{online ? 'Online' : 'Offline'}</span>
+          <span className={`pill ${online ? 'ok' : 'warn'}`}>{online ? t('status.online') : t('status.offline')}</span>
           <span className={`pill ${syncStatus.error ? 'warn' : ''}`} title={syncStatus.error || 'Changes waiting to reach the server'}>
-            {syncLabel} · {queued} waiting
+            {syncLabel} · {t('status.waiting', { n: queued })}
           </span>
           {session ? (
             <>
+              {session.businessName && session.isSuper !== undefined && <span className="pill" title="Business">{session.businessName}</span>}
               <span className="pill" title="Signed-in account">{session.username} ({session.role})</span>
-              <button onClick={logout}>Sign out</button>
+              <button onClick={logout}>{t('status.signOut')}</button>
             </>
           ) : (
             <select value={role} onChange={(e) => changeRole(e.target.value as Role)} aria-label="Role">

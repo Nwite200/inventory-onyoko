@@ -60,3 +60,21 @@ export function buildTestPage(o: Pick<ReceiptOptions, 'width' | 'businessName' |
   if (o.cut) p.cut();
   return p.bytes();
 }
+
+/** One price label for a thermal printer: name, barcode (with its number under it) and price. */
+export function buildLabel(
+  item: { name: string; sku: string; price: number },
+  o: { width: number; money: (n: number) => string; copies: number; cut: boolean },
+): Uint8Array {
+  const p = new EscPos(o.width);
+  p.init();
+  for (let i = 0; i < Math.max(1, Math.min(o.copies, 200)); i++) {
+    p.align('center').bold(true).paragraph(item.name, o.width).bold(false);
+    p.barcode(item.sku, { height: 60, width: o.width >= 48 ? 3 : 2 });
+    p.line();
+    p.bold(true).size(1, 2).line(o.money(item.price)).size(1, 1).bold(false);
+    p.align('left').feed(2);
+    if (o.cut) p.cut();
+  }
+  return p.bytes();
+}

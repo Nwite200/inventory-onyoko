@@ -3,6 +3,7 @@
 import { db, uid, type AuditEntry, type Product, type Sale, type SaleItem } from './db';
 import { config } from './config';
 import { currentLocationId } from './location';
+import { canEncode } from './printing/code128';
 import { makeNumber, numberPrefix } from './numbering';
 import { recordMovement } from './stock';
 
@@ -62,6 +63,42 @@ export async function setPrice(productId: string, price: number): Promise<Produc
     await queue('product', 'update', { id: p.id, price, at });
     return updated;
   });
+}
+
+/** Sets (or clears, with '') a product's barcode / SKU. Codes must be unique among products. */
+export async function setSku(productId: string, sku: string): Promise<Product> {
+  const code = sku.trim();
+  if (code && !canEncode(code)) throw new Error('A barcode can only contain letters, digits and common symbols (no accents), up to 80 characters.');
+  return db.transaction('rw', db.products, db.outbox, async () => {
+    const p = await db.products.get(productId);
+    if (!p) throw new Error('Product not found');
+    if (code && (await db.products.where('sku').equals(code).filter((x) => x.id !== productId).count()) > 0) {
+      throw new Error('Another product already uses that barcode');
+    }
+    const at = Date.now();
+    const updated = { ...p, sku: code, skuAt: at, updatedAt: at };
+    await db.products.put(updated);
+    await queue('product', 'update', { id: p.id, sku: code, at });
+    return updated;
+  });
+}
+
+/** Gives every product that has no barcode a new unique number (9 digits, starting with 2). Returns how many. */
+export async function assignMissingSkus(): Promise<number> {
+  const all = await db.products.toArray();
+  const used = new Set(all.map((p) => p.sku).filter(Boolean));
+  let n = 0;
+  for (const p of all.filter((x) => !x.sku)) {
+    let code = '';
+    do {
+      const r = globalThis.crypto.getRandomValues(new Uint32Array(1))[0]! % 100_000_000;
+      code = '2' + String(r).padStart(8, '0');
+    } while (used.has(code));
+    used.add(code);
+    await setSku(p.id, code);
+    n++;
+  }
+  return n;
 }
 
 export async function deleteProduct(productId: string): Promise<void> {

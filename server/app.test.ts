@@ -249,3 +249,89 @@ describe('transfers', () => {
     expect((await push([pur], cashier)).body.rejected).toHaveLength(1);
   });
 });
+
+describe('several businesses', () => {
+  let rival = ''; // admin of the second business
+  let rivalCashier = '';
+  const pushAs = (token: string, items: unknown[], deviceId = 'dev-b') => call('POST', '/api/sync', { deviceId, items }, token);
+  const pullAll = async (token: string, deviceId = 'puller') => {
+    let since = 0;
+    let all: any[] = [];
+    for (;;) {
+      const page = (await call('GET', `/api/sync?since=${since}&deviceId=${deviceId}`, undefined, token)).body;
+      all = all.concat(page.changes);
+      since = page.cursor;
+      if (!page.hasMore) break;
+    }
+    return all;
+  };
+
+  it('only the platform owner can open businesses', async () => {
+    expect((await call('GET', '/api/businesses', undefined, manager)).status).toBe(403);
+    expect((await call('POST', '/api/businesses', { name: 'X', adminUsername: 'zed1', adminPassword: 'long-enough-pw' }, manager)).status).toBe(403);
+    const r = await call('POST', '/api/businesses', { name: 'Rival Stores', adminUsername: 'rivalboss', adminPassword: 'long-enough-pw' }, admin);
+    expect(r.status).toBe(201);
+    expect((await call('POST', '/api/businesses', { name: 'Again', adminUsername: 'rivalboss', adminPassword: 'long-enough-pw' }, admin)).status).toBe(409);
+    expect((await call('GET', '/api/businesses', undefined, admin)).body.businesses).toHaveLength(2);
+    rival = (await call('POST', '/api/auth/login', { username: 'rivalboss', password: 'long-enough-pw' })).body.token;
+    const me = await call('GET', '/api/auth/me', undefined, rival);
+    expect(me.body.user.business.name).toBe('Rival Stores');
+    expect(me.body.user.isSuper).toBe(false);
+    expect((await call('GET', '/api/businesses', undefined, rival)).status).toBe(403); // a business admin is not the owner
+  });
+
+  it('keeps people separate', async () => {
+    expect((await call('POST', '/api/users', { username: 'rcash', password: 'long-enough-pw', role: 'cashier' }, rival)).status).toBe(201);
+    rivalCashier = (await call('POST', '/api/auth/login', { username: 'rcash', password: 'long-enough-pw' })).body.token;
+    const mine = (await call('GET', '/api/users', undefined, admin)).body.users.map((u: any) => u.username);
+    const theirs = (await call('GET', '/api/users', undefined, rival)).body.users.map((u: any) => u.username);
+    expect(mine).not.toContain('rcash');
+    expect(theirs.sort()).toEqual(['rcash', 'rivalboss']);
+    // neither business admin can touch the other's accounts
+    expect((await call('POST', '/api/users/password', { username: 'amaka', password: 'hijacked-pw-1' }, rival)).status).toBe(404);
+    expect((await call('POST', '/api/users/disable', { username: 'amaka', disabled: true }, rival)).status).toBe(404);
+    expect((await call('POST', '/api/users/disable', { username: 'rcash', disabled: true }, manager)).status).toBe(403);
+    expect((await call('POST', '/api/auth/login', { username: 'amaka', password: 'long-enough-pw' })).status).toBe(200);
+  });
+
+  it('keeps data separate, even for the same ids', async () => {
+    expect((await pushAs(rival, [{ id: 1, entity: 'sale', op: 'create', at: clock, payload: { id: 'secret-sale', items: [{ productId: 'rp', qty: 1, price: 50 }], total: 50 } }])).body.accepted).toEqual([1]);
+    const mineSeen = await pullAll(admin);
+    expect(JSON.stringify(mineSeen)).not.toContain('secret-sale');
+    const theirsSeen = await pullAll(rival);
+    expect(theirsSeen.some((c) => c.payload.id === 'secret-sale')).toBe(true);
+    expect(JSON.stringify(theirsSeen)).not.toContain('"p1"'); // none of the first business's sales
+    // a cashier in the other business cannot void a sale that only exists in the first business
+    const ownerOfMain = await pullAll(admin, 'x');
+    const mainSale = ownerOfMain.find((c) => c.entity === 'sale');
+    if (mainSale) {
+      const v = await pushAs(rivalCashier, [{ id: 2, entity: 'sale', op: 'void', at: clock, payload: { id: mainSale.payload.id } }]);
+      expect(v.body.rejected).toHaveLength(1);
+    }
+    // a transfer receipt in one business cannot reference a send from another
+    const send = { id: 3, entity: 'transfer', op: 'create', at: clock, payload: { id: 'trx', fromLocationId: 'main', toLocationId: 'b', items: [{ productId: 'rp', qty: 2 }] } };
+    expect((await pushAs(rival, [send])).body.accepted).toEqual([3]);
+    const recv = { id: 4, entity: 'transfer', op: 'receive', at: clock, payload: { id: 'trx', toLocationId: 'b', items: [{ productId: 'rp', qty: 2 }] } };
+    expect((await pushAs(manager, [recv], 'dev-m')).body.rejected[0].reason).toMatch(/no such transfer/);
+  });
+});
+
+describe('expiry lots', () => {
+  const push = (items: unknown[], token: string) => call('POST', '/api/sync', { deviceId: 'dev-lot', items }, token);
+  it('managers record batches, bad ones and cashiers are refused, and cashiers still receive them', async () => {
+    const good = { id: 801, entity: 'lot', op: 'create', at: clock, payload: { id: 'lotA', productId: 'p1', locationId: 'main', qty: 4, expiresAt: clock + 86_400_000, batchNo: 'B1' } };
+    expect((await push([good], manager)).body.accepted).toEqual([801]);
+    const bad = { id: 802, entity: 'lot', op: 'create', at: clock, payload: { id: 'lotB', productId: 'p1', locationId: 'main', qty: 0, expiresAt: 'soon' } };
+    expect((await push([bad], manager)).body.rejected).toHaveLength(1);
+    expect((await push([{ ...good, id: 803, payload: { ...good.payload, id: 'lotC' } }], cashier)).body.rejected).toHaveLength(1);
+    const page = (await call('GET', '/api/sync?since=0&deviceId=cash-dev', undefined, cashier)).body;
+    let seen = page.changes as any[];
+    let cursor = page.cursor;
+    let more = page.hasMore;
+    while (more) {
+      const n = (await call('GET', `/api/sync?since=${cursor}&deviceId=cash-dev`, undefined, cashier)).body;
+      seen = seen.concat(n.changes); cursor = n.cursor; more = n.hasMore;
+    }
+    expect(seen.some((c) => c.entity === 'lot' && c.payload.id === 'lotA' && c.payload.batchNo === 'B1')).toBe(true);
+  });
+});

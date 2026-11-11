@@ -5,10 +5,12 @@ import { seedDemo } from '../actions';
 import { syncNow } from '../sync';
 import { api, getSession, serverMode } from '../auth';
 import { Users } from './Users';
+import { Businesses } from './Businesses';
 import { Account } from './Account';
 import { Shops } from './Shops';
 import { PrinterSetup } from './PrinterSetup';
 import { VoiceSetup } from './VoiceSetup';
+import { LANGUAGES, t, type Lang } from '../i18n';
 
 export function Settings({ canManage, isAdmin, onChange }: { canManage: boolean; isAdmin: boolean; onChange: () => void }) {
   const [draft, setDraft] = useState<AppConfig>(() => clone(config));
@@ -62,6 +64,12 @@ export function Settings({ canManage, isAdmin, onChange }: { canManage: boolean;
         <label>Brand colour<input type="color" value={draft.primaryColor} onChange={(e) => set('primaryColor', e.target.value)} /></label>
         <label>Currency symbol<input value={draft.currencySymbol} onChange={(e) => set('currencySymbol', e.target.value)} /></label>
         <label>Locale (number format)<input value={draft.locale} onChange={(e) => set('locale', e.target.value)} /></label>
+        <label>
+          {t('settings.language')} / Language
+          <select value={draft.language} onChange={(e) => set('language', e.target.value)}>
+            {(Object.keys(LANGUAGES) as Lang[]).map((l) => <option key={l} value={l}>{LANGUAGES[l]}</option>)}
+          </select>
+        </label>
         <label>Voice language<input value={draft.speechLang} onChange={(e) => set('speechLang', e.target.value)} /></label>
       </div>
 
@@ -147,6 +155,7 @@ export function Settings({ canManage, isAdmin, onChange }: { canManage: boolean;
       </div>
 
       {account}
+      {isAdmin && serverMode() && getSession()?.isSuper && <Businesses call={(m, p, b) => api(m, p, b, getSession()!.token)} />}
       {isAdmin && serverMode() && getSession() && <Users call={(m, p, b) => api(m, p, b, getSession()!.token)} />}
 
       <div className="card form">

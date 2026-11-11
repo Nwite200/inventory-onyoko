@@ -14,6 +14,7 @@ Schemas:
 {"type":"set_price","product":string,"price":number}
 {"type":"report_today"}
 {"type":"low_stock"}
+{"type":"expiring"}
 {"type":"receive_purchase","items":[{"qty":number,"name":string,"cost":number|null}],"supplier":string,"paid":number|"full"|null}
 {"type":"pay_supplier","supplier":string,"amount":number}
 {"type":"supplier_balance","supplier":string|null}
@@ -82,6 +83,8 @@ export function validateIntent(x: unknown): Intent | null {
       return { type: 'report_today' };
     case 'low_stock':
       return { type: 'low_stock' };
+    case 'expiring':
+      return { type: 'expiring' };
     default:
       return null;
   }

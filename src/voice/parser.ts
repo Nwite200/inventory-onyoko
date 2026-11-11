@@ -19,6 +19,7 @@ export type Intent =
   | { type: 'receive_transfer'; from?: string }
   | { type: 'report_today' }
   | { type: 'low_stock' }
+  | { type: 'expiring' }
   | { type: 'confirm' }
   | { type: 'cancel' }
   | { type: 'undo' }
@@ -254,6 +255,9 @@ export function parseCommand(raw: string): Intent {
   }
 
   // reports
+  if (/\bexpir(?:e|es|ed|ing|y)\b|\bgoing (?:bad|off)\b|\bpast (?:their |its )?(?:date|expiry)\b|\bout of date\b/.test(t) && !/\b(?:add|set|receive|sell|sold)\b/.test(t)) {
+    return { type: 'expiring' };
+  }
   if (/\blow\b.*\bstock\b|\bstock\b.*\blow\b|running (?:low|out)|(?:what|which).*(?:finish|finishing|out of stock|almost done|low)/.test(t)) {
     return { type: 'low_stock' };
   }

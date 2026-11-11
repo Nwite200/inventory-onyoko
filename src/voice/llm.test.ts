@@ -24,3 +24,9 @@ describe('LLM answers for purchases, suppliers and transfers', () => {
     expect(validateIntent({ type: 'delete_everything' })).toBeNull();
   });
 });
+
+describe('expiring intent from the model', () => {
+  it('is accepted', () => {
+    expect(validateIntent({ type: 'expiring' })).toEqual({ type: 'expiring' });
+  });
+});

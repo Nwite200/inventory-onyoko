@@ -8,7 +8,7 @@ All code is original; it is a clean-room build, not a copy of any existing POS.
 ```bash
 npm install
 npm run dev        # development
-npm test           # 179 tests (voice, offline speech model, server, multi-shop sync, receipt printer, browser-compatibility guard)
+npm test           # 226 tests (voice, offline speech model, server, multi-shop sync, receipt printer, browser-compatibility guard)
 npm run get-model  # one-time: install the offline speech model (about 100 MB) for on-device voice
 npm run build      # production build in dist/ (installable PWA)
 npm run preview    # serve the production build
@@ -27,6 +27,10 @@ Open the app, go to **Settings → Load demo data**, then try the **Assistant** 
 - **Several shops:** products are shared, stock is counted per shop. Each device belongs to one shop (Settings > Shops; the owner adds shops). Reports can show this shop or all shops.
 - **Transfers between shops:** sending takes the goods out of the sending shop at once; the receiving shop adds them only when someone taps "Goods arrived", so nothing is counted twice or lost in transit.
 - **Receipt printing:** the normal print dialog (58/80 mm), or straight to a USB, serial or Bluetooth LE receipt printer with ESC/POS, or through the RawBT app on Android (for the many cheap classic-Bluetooth printers). Cut, cash-drawer kick, address/phone/footer, automatic print after a sale.
+- **Expiry dates and batches:** when receiving goods you can enter a batch number and expiry date; batches can also be added by hand (Products). Reports lists what has expired or expires in 30 days, the till marks products with expired stock, and you can ask "What's expiring?". How much of a batch is left is worked out from stock, assuming the oldest batch sells first.
+- **Barcode labels:** Products > Print barcode labels. Code 128 barcodes on a sheet (label size and labels per row are adjustable) or on the receipt printer. The sheet's barcodes were decoded back from a browser-rendered page; physical scanners and printed paper were not tried.
+- **Languages:** English, Hausa, Yoruba, Igbo and Nigerian Pidgin for the main screens (Settings > Language). The four Nigerian-language texts were written by an AI and have not been checked by native speakers; correct them in `src/i18n.ts`. Some less-used screens are still English only.
+- **Several businesses on one server:** the first admin is the server owner and can open separate businesses (Settings > Businesses), each with its own admin, staff, products and sales. Businesses cannot see or change each other's data or accounts (covered by tests). Signing in to a different business on the same device clears that device's local data first.
 - **Passwords:** everyone can change their own password (Settings); the owner can reset anyone's. Changing or resetting signs that account out of every other device.
 - **White-label:** name, tagline, colour, currency, locale, language, feature switches and presets (Settings), or ship a `public/config.json` per deployment.
 - **Voice assistant** (type or speak). Examples:
@@ -87,7 +91,7 @@ How it works: it listens until you pause, then the model writes down what you sa
 8. **Shops:** a device's shop is chosen by a manager/owner in Settings (cashiers see it but cannot change it). The server does not check that a "Goods arrived" tap came from the receiving shop's device; it checks that the transfer was really sent and uses the quantities that were sent.
 9. A change the server refuses (for example a cashier's stock adjustment) is taken back out on that device, and recorded in the audit log.
 10. Voice for purchases, suppliers and transfers works for the phrasings above (tested with typed text through the same parser; real accents and unusual wording are untested like the rest of voice). Anything it does not understand is simply not done, and every action is read back and needs "yes".
-11. Not built: multi-business, label printing, translations.
+11. Expiry batches record only quantity and date; there is no per-batch selling (the oldest is assumed sold first). Voice cannot add batches. Business names and users are managed by the server owner only; there is no way to delete a business yet.
 
 ## Deploying for a client
 

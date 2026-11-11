@@ -1,12 +1,16 @@
 import { config } from './config';
 import type { Role } from './voice/agent';
-import { purgeForCashier } from './syncApply';
+import { purgeForCashier, wipeLocalData } from './syncApply';
 
 export interface Session {
   token: string;
   username: string;
   role: Role;
   serverUrl: string;
+  businessId?: string;
+  businessName?: string;
+  /** the platform owner: may open other businesses on this server */
+  isSuper?: boolean;
 }
 
 export class ApiError extends Error {
@@ -65,11 +69,28 @@ export async function authStatus(): Promise<{ needsSetup: boolean }> {
 
 interface LoginReply {
   token: string;
-  user: { username: string; role: Role };
+  user: { username: string; role: Role; isSuper?: boolean; business?: { id: string; name: string } };
 }
 
 async function finish(r: LoginReply): Promise<Session> {
-  const s: Session = { token: r.token, username: r.user.username, role: r.user.role, serverUrl: serverBase() };
+  const s: Session = {
+    token: r.token,
+    username: r.user.username,
+    role: r.user.role,
+    serverUrl: serverBase(),
+    businessId: r.user.business?.id,
+    businessName: r.user.business?.name,
+    isSuper: r.user.isSuper === true,
+  };
+  // a different business on the same device must never see the first one's data
+  const bizKey = `openpos.business.${serverBase()}`;
+  const before = localStorage.getItem(bizKey);
+  if (s.businessId && before !== null && before !== s.businessId) {
+    await wipeLocalData();
+    localStorage.removeItem(`openpos.cursor.${serverBase()}`);
+    localStorage.removeItem(`openpos.feed.${serverBase()}`);
+  }
+  if (s.businessId) localStorage.setItem(bizKey, s.businessId);
   if (s.role === 'cashier') await purgeForCashier();
   setSession(s);
   return s;

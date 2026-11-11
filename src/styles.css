@@ -103,7 +103,14 @@ tr.voided td .pill { text-decoration: none; }
 }
 @media print {
   body * { visibility: hidden; }
-  .receipt, .receipt * { visibility: visible; }
+  .receipt, .receipt *, .label-sheet, .label-sheet * { visibility: visible; }
+  .label-sheet { position: absolute; left: 0; top: 0; gap: 0 !important; }
+  .label { border: none !important; }
+  /* printing labels: drop everything else from the page so only the sheet prints, across as many pages as needed */
+  body.printing-labels .app > :not(main), body.printing-labels main > div > :not(.modal), body.printing-labels .dock { display: none !important; }
+  body.printing-labels .modal { position: static; display: block; background: none; padding: 0; }
+  body.printing-labels .labels-dialog { max-height: none; overflow: visible; border: none; padding: 0; margin: 0; width: auto; }
+  body.printing-labels .label-sheet { position: static; }
   .receipt { position: fixed; left: 0; top: 0; width: var(--paper, 58mm); }
   .no-print { display: none !important; }
 }
@@ -120,3 +127,11 @@ details summary { cursor: pointer; margin-top: 4px; }
 .progress div { height: 100%; background: var(--primary); transition: width 0.2s; }
 
 .banner { background: #fef3c7; border: 1px solid #fcd34d; color: #78350f; border-radius: 10px; padding: 10px 14px; margin: 10px 0; font-size: 0.9rem; }
+
+.labels-dialog { width: min(760px, 100%); max-height: 94vh; overflow: auto; }
+.label-sheet { display: grid; gap: 4px; margin-top: 12px; align-items: start; }
+.label { border: 1px dashed var(--line); padding: 1.5mm 2mm; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; background: #fff; color: #000; font-size: 9pt; line-height: 1.15; }
+.label-name { font-weight: 700; max-height: 2.4em; overflow: hidden; }
+.barcode { width: 100%; height: 45%; display: block; }
+.label-foot { display: flex; justify-content: space-between; align-items: baseline; font-size: 8pt; }
+.label-foot strong { font-size: 11pt; }

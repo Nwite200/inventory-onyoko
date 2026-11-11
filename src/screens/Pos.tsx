@@ -5,6 +5,8 @@ import { checkout } from '../actions';
 import { config, formatMoney } from '../config';
 import { printSale } from '../printing/print';
 import { currentLocationId, listLocations } from '../location';
+import { t } from '../i18n';
+import { expiredProductIds } from '../lots';
 
 /** The shop's name for the receipt, only when there is more than one shop. */
 async function shopLabel(): Promise<string | undefined> {
@@ -48,15 +50,15 @@ export function Receipt({ sale, onClose, autoPrint = false }: { sale: Sale; onCl
         ))}
         <hr />
         <div className="row total">
-          <span>Total</span>
+          <span>{t('pos.total')}</span>
           <span>{formatMoney(sale.total)}</span>
         </div>
         <p className="center small muted">{config.printer.footer || ''}</p>
         {printMsg && <p className="small no-print" role="status">{printMsg}</p>}
         <div className="actions no-print">
-          <button onClick={() => void print()}>{direct ? 'Print receipt' : 'Print'}</button>
+          <button onClick={() => void print()}>{direct ? t('receipt.printReceipt') : t('receipt.print')}</button>
           <button className="primary" onClick={onClose}>
-            Done
+            {t('receipt.done')}
           </button>
         </div>
       </div>
@@ -67,6 +69,7 @@ export function Receipt({ sale, onClose, autoPrint = false }: { sale: Sale; onCl
 export function Pos() {
   const products = useLiveQuery(() => db.products.toArray(), [], []);
   const customers = useLiveQuery(() => db.customers.toArray(), [], []);
+  const expired = useLiveQuery(async () => { await db.lots.count(); await db.products.count(); return expiredProductIds(); }, [], new Set<string>());
   const [q, setQ] = useState('');
   const [cart, setCart] = useState<Record<string, number>>({});
   const [customer, setCustomer] = useState('');
@@ -125,32 +128,33 @@ export function Pos() {
       <section>
         <input
           className="search"
-          placeholder="Search or scan barcode…"
+          placeholder={t('pos.search')}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={onSearchKey}
           autoFocus
         />
-        {products.length === 0 && <p className="muted">No products yet. Add some in Products, or load demo data in Settings.</p>}
+        {products.length === 0 && <p className="muted">{t('pos.noProducts')}</p>}
         <div className="grid">
           {shown.map((p) => (
             <button key={p.id} className="tile" onClick={() => add(p.id)} disabled={p.stock <= 0 && !config.allowNegativeStock}>
               <strong>{p.name}</strong>
+              {expired.has(p.id) && <span className="small warn-text">⚠ {t('pos.expired')}</span>}
               <span>{formatMoney(p.price)}</span>
-              <span className={`small ${p.stock <= p.lowStockAt ? 'warn-text' : 'muted'}`}>{p.stock} in stock</span>
+              <span className={`small ${p.stock <= p.lowStockAt ? 'warn-text' : 'muted'}`}>{t('pos.inStock', { n: p.stock })}</span>
             </button>
           ))}
         </div>
       </section>
 
       <aside className="cart">
-        <h3>Cart</h3>
-        {lines.length === 0 && <p className="muted">Tap a product to add it.</p>}
+        <h3>{t('pos.cart')}</h3>
+        {lines.length === 0 && <p className="muted">{t('pos.tapToAdd')}</p>}
         {lines.map(({ p, qty }) => (
           <div className="cart-line" key={p.id}>
             <div>
               <div>{p.name}</div>
-              <div className="small muted">{formatMoney(p.price)} each</div>
+              <div className="small muted">{t('pos.each', { price: formatMoney(p.price) })}</div>
             </div>
             <div className="qty">
               <button onClick={() => add(p.id, -1)}>−</button>
@@ -162,7 +166,7 @@ export function Pos() {
         ))}
         {config.features.customers && (
           <>
-            <input list="customers" placeholder="Customer (optional)" value={customer} onChange={(e) => setCustomer(e.target.value)} />
+            <input list="customers" placeholder={t('pos.customer')} value={customer} onChange={(e) => setCustomer(e.target.value)} />
             <datalist id="customers">
               {customers.map((c) => (
                 <option key={c.id} value={c.name} />
@@ -171,21 +175,21 @@ export function Pos() {
           </>
         )}
         <select value={payment} onChange={(e) => setPayment(e.target.value)}>
-          <option value="cash">Cash</option>
-          <option value="transfer">Transfer</option>
-          <option value="pos">POS</option>
-          <option value="card">Card</option>
-          <option value="credit">Credit</option>
+          <option value="cash">{t('pay.cash')}</option>
+          <option value="transfer">{t('pay.transfer')}</option>
+          <option value="pos">{t('pay.pos')}</option>
+          <option value="card">{t('pay.card')}</option>
+          <option value="credit">{t('pay.credit')}</option>
         </select>
         <div className="row total">
-          <span>Total</span>
+          <span>{t('pos.total')}</span>
           <span>{formatMoney(total)}</span>
         </div>
         {error && <p className="error">{error}</p>}
         <button className="primary big" disabled={lines.length === 0} onClick={pay}>
-          Charge {formatMoney(total)}
+          {t('pos.charge', { amount: formatMoney(total) })}
         </button>
-        {lines.length > 0 && <button onClick={() => setCart({})}>Clear cart</button>}
+        {lines.length > 0 && <button onClick={() => setCart({})}>{t('pos.clear')}</button>}
       </aside>
 
       {receipt && <Receipt sale={receipt} autoPrint onClose={() => setReceipt(null)} />}

@@ -29,7 +29,8 @@ const users = (db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: numbe
 if (users === 0 && ADMIN_USER && ADMIN_PASSWORD) {
   if (ADMIN_PASSWORD.length < 8) throw new Error('ADMIN_PASSWORD must be at least 8 characters');
   const { salt, hash } = hashPassword(ADMIN_PASSWORD);
-  db.prepare("INSERT INTO users (username, role, salt, hash, created_at) VALUES (?, 'admin', ?, ?, ?)").run(ADMIN_USER.toLowerCase(), salt, hash, Date.now());
+  db.prepare("INSERT OR IGNORE INTO businesses (id, name, created_at) VALUES ('main', ?, ?)").run(process.env.BUSINESS_NAME ?? 'My business', Date.now());
+  db.prepare("INSERT INTO users (username, role, salt, hash, created_at, business_id, is_super) VALUES (?, 'admin', ?, ?, ?, 'main', 1)").run(ADMIN_USER.toLowerCase(), salt, hash, Date.now());
   console.log(`Created admin "${ADMIN_USER}"`);
 }
 

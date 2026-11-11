@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type RequestListener, type ServerResponse } from 'node:http';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { ROLES, canPush, hashPassword, signToken, verifyPassword, verifyToken, type Role } from './auth.ts';
 
@@ -8,7 +9,7 @@ const TOKEN_TTL_MS = 14 * 24 * 3600 * 1000;
 const MAX_BODY = 2 * 1024 * 1024;
 const PULL_LIMIT = 500;
 const CASHIER_VOID_WINDOW_MS = 5 * 60 * 1000;
-const ENTITIES = new Set(['product', 'stock_movement', 'sale', 'customer', 'location', 'supplier', 'purchase', 'transfer']);
+const ENTITIES = new Set(['product', 'stock_movement', 'sale', 'customer', 'location', 'supplier', 'purchase', 'transfer', 'lot']);
 
 class HttpError extends Error {
   status: number;
@@ -29,6 +30,9 @@ export interface AppOptions {
 interface AuthUser {
   username: string;
   role: Role;
+  businessId: string;
+  /** the platform owner: the first admin on the server, who may add other businesses */
+  isSuper: boolean;
 }
 
 const MIME: Record<string, string> = {
@@ -79,12 +83,13 @@ export function createApp(opts: AppOptions): RequestListener {
     const token = h.startsWith('Bearer ') ? h.slice(7) : '';
     const t = token ? verifyToken(secret, token, now()) : null;
     if (!t) throw new HttpError(401, 'Please sign in');
-    const row = db.prepare('SELECT username, role, disabled, token_version FROM users WHERE username = ?').get(t.username) as
-      | { username: string; role: Role; disabled: number; token_version: number }
+    const row = db.prepare('SELECT username, role, disabled, token_version, business_id, is_super FROM users WHERE username = ?').get(t.username) as
+      | { username: string; role: Role; disabled: number; token_version: number; business_id: string; is_super: number }
       | undefined;
     if (!row || row.disabled) throw new HttpError(401, 'Account is disabled or does not exist');
     if (row.token_version !== t.version) throw new HttpError(401, 'Your password was changed. Please sign in again.');
-    return { username: row.username, role: row.role }; // role always comes from the DB, never from the token
+    // role and business always come from the DB, never from the token
+    return { username: row.username, role: row.role, businessId: row.business_id, isSuper: row.is_super === 1 };
   };
 
   const validUsername = (u: unknown): string => {
@@ -96,14 +101,22 @@ export function createApp(opts: AppOptions): RequestListener {
     return p;
   };
 
-  const createUser = (username: string, password: string, role: Role): void => {
+  const createUser = (username: string, password: string, role: Role, businessId: string, isSuper = false): void => {
     const { salt, hash } = hashPassword(password);
-    db.prepare('INSERT INTO users (username, role, salt, hash, created_at) VALUES (?, ?, ?, ?, ?)').run(username, role, salt, hash, now());
+    db.prepare('INSERT INTO users (username, role, salt, hash, created_at, business_id, is_super) VALUES (?, ?, ?, ?, ?, ?, ?)').run(username, role, salt, hash, now(), businessId, isSuper ? 1 : 0);
   };
+
+  const businessName = (id: string): string => (db.prepare('SELECT name FROM businesses WHERE id = ?').get(id) as { name: string } | undefined)?.name ?? '';
 
   const sessionFor = (u: AuthUser) => {
     const v = (db.prepare('SELECT token_version FROM users WHERE username = ?').get(u.username) as { token_version: number }).token_version;
-    return { token: signToken(secret, u.username, TOKEN_TTL_MS, now(), v), user: u };
+    return { token: signToken(secret, u.username, TOKEN_TTL_MS, now(), v), user: { ...u, business: { id: u.businessId, name: businessName(u.businessId) } } };
+  };
+
+  /** The account `target`, if the caller may manage it (same business; the platform owner may manage anyone). */
+  const manageable = (caller: AuthUser, target: string): { username: string; business_id: string } | undefined => {
+    const row = db.prepare('SELECT username, business_id FROM users WHERE username = ?').get(target) as { username: string; business_id: string } | undefined;
+    return row && (caller.isSuper || row.business_id === caller.businessId) ? row : undefined;
   };
 
   /** Sets a new password and bumps token_version, so every session signed in before this moment stops working. */
@@ -141,6 +154,9 @@ export function createApp(opts: AppOptions): RequestListener {
       if (op === 'void' && (!goodItems(false) || typeof o.locationId !== 'string')) return 'bad purchase void';
       if (op === 'pay' && (typeof o.paymentId !== 'string' || !(Number(o.amount) > 0))) return 'bad purchase payment';
     }
+    if (entity === 'lot' && op === 'create') {
+      if (typeof o.productId !== 'string' || typeof o.locationId !== 'string' || !(Number(o.qty) > 0) || !Number.isFinite(o.expiresAt)) return 'bad lot';
+    }
     if (entity === 'transfer') {
       if (op === 'create' && (!goodItems(false) || typeof o.fromLocationId !== 'string' || typeof o.toLocationId !== 'string' || o.fromLocationId === o.toLocationId)) return 'bad transfer';
     }
@@ -169,13 +185,13 @@ export function createApp(opts: AppOptions): RequestListener {
     if (!Array.isArray(items) || items.length > 200) throw new HttpError(400, 'items must be an array of at most 200');
 
     const insert = db.prepare(
-      'INSERT OR IGNORE INTO changes (device_id, client_id, entity, op, payload, at, user, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO changes (device_id, client_id, entity, op, payload, at, user, received_at, business_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     );
     const saleOwner = db.prepare(
-      "SELECT user, at FROM changes WHERE entity = 'sale' AND op = 'create' AND json_extract(payload, '$.id') = ? LIMIT 1",
+      "SELECT user, at FROM changes WHERE business_id = ? AND entity = 'sale' AND op = 'create' AND json_extract(payload, '$.id') = ? LIMIT 1",
     );
     const sentTransfer = db.prepare(
-      "SELECT payload FROM changes WHERE entity = 'transfer' AND op = 'create' AND json_extract(payload, '$.id') = ? LIMIT 1",
+      "SELECT payload FROM changes WHERE business_id = ? AND entity = 'transfer' AND op = 'create' AND json_extract(payload, '$.id') = ? LIMIT 1",
     );
     const accepted: number[] = [];
     const rejected: { id: number; reason: string }[] = [];
@@ -199,7 +215,7 @@ export function createApp(opts: AppOptions): RequestListener {
         let payload = raw.payload as Record<string, unknown>;
         if (entity === 'transfer' && op === 'receive') {
           // stock arrives exactly as it was sent, whatever the device claims
-          const sent = sentTransfer.get(String(payload.id)) as { payload: string } | undefined;
+          const sent = sentTransfer.get(user.businessId, String(payload.id)) as { payload: string } | undefined;
           if (!sent) {
             rejected.push({ id, reason: 'no such transfer was sent' });
             continue;
@@ -209,14 +225,14 @@ export function createApp(opts: AppOptions): RequestListener {
         }
         let verdict = canPush(user.role, entity, op);
         if (verdict === 'check-void') {
-          const created = saleOwner.get((raw.payload as { id: string }).id) as { user: string; at: number } | undefined;
+          const created = saleOwner.get(user.businessId, (raw.payload as { id: string }).id) as { user: string; at: number } | undefined;
           verdict = created && created.user === user.username && at - created.at <= CASHIER_VOID_WINDOW_MS ? 'yes' : 'no';
         }
         if (verdict !== 'yes') {
           rejected.push({ id, reason: `${user.role} may not ${op} ${entity}` });
           continue;
         }
-        insert.run(deviceId, id, entity, op, JSON.stringify(payload), at, user.username, now());
+        insert.run(deviceId, id, entity, op, JSON.stringify(payload), at, user.username, now(), user.businessId);
         accepted.push(id); // duplicates (retries) are ignored by the DB but still reported as accepted
       }
       db.exec('COMMIT');
@@ -231,10 +247,10 @@ export function createApp(opts: AppOptions): RequestListener {
     const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
     const deviceId = url.searchParams.get('deviceId') ?? '';
     const rows = db
-      .prepare('SELECT seq, entity, op, payload, at FROM changes WHERE seq > ? AND device_id != ? ORDER BY seq LIMIT ?')
-      .all(since, deviceId, PULL_LIMIT) as { seq: number; entity: string; op: string; payload: string; at: number }[];
+      .prepare('SELECT seq, entity, op, payload, at FROM changes WHERE business_id = ? AND seq > ? AND device_id != ? ORDER BY seq LIMIT ?')
+      .all(user.businessId, since, deviceId, PULL_LIMIT) as { seq: number; entity: string; op: string; payload: string; at: number }[];
     const hasMore = rows.length === PULL_LIMIT;
-    const head = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM changes').get() as { m: number }).m;
+    const head = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM changes WHERE business_id = ?').get(user.businessId) as { m: number }).m;
     const changes = rows.flatMap((r) => {
       let payload: Record<string, unknown> | null = JSON.parse(r.payload) as Record<string, unknown>;
       if (user.role === 'cashier') payload = forCashier(r.entity, r.op, payload);
@@ -294,8 +310,10 @@ export function createApp(opts: AppOptions): RequestListener {
           if (userCount() > 0) throw new HttpError(409, 'Setup has already been done');
           const b = await readJson(req);
           const username = validUsername(b.username);
-          createUser(username, validPassword(b.password), 'admin');
-          return send(res, 201, sessionFor({ username, role: 'admin' }));
+          const name = typeof b.businessName === 'string' && b.businessName.trim() ? b.businessName.trim().slice(0, 80) : 'My business';
+          db.prepare("INSERT OR IGNORE INTO businesses (id, name, created_at) VALUES ('main', ?, ?)").run(name, now());
+          createUser(username, validPassword(b.password), 'admin', 'main', true);
+          return send(res, 201, sessionFor({ username, role: 'admin', businessId: 'main', isSuper: true }));
         }
 
         case 'POST /api/auth/login': {
@@ -304,7 +322,7 @@ export function createApp(opts: AppOptions): RequestListener {
           const f = failures.get(username);
           if (f && f.until > now()) throw new HttpError(429, 'Too many failed attempts. Try again in a minute.');
           const row = db.prepare('SELECT * FROM users WHERE username = ?').get(username) as
-            | { username: string; role: Role; salt: string; hash: string; disabled: number }
+            | { username: string; role: Role; salt: string; hash: string; disabled: number; business_id: string; is_super: number }
             | undefined;
           // always run scrypt so response time does not reveal whether the user exists
           const ok = row ? verifyPassword(String(b.password ?? ''), row.salt, row.hash) : (verifyPassword('x', '00', '00'), false);
@@ -314,16 +332,18 @@ export function createApp(opts: AppOptions): RequestListener {
             throw new HttpError(401, 'Wrong username or password');
           }
           failures.delete(username);
-          return send(res, 200, sessionFor({ username: row.username, role: row.role }));
+          return send(res, 200, sessionFor({ username: row.username, role: row.role, businessId: row.business_id, isSuper: row.is_super === 1 }));
         }
 
-        case 'GET /api/auth/me':
-          return send(res, 200, { user: authenticate(req) });
+        case 'GET /api/auth/me': {
+          const u = authenticate(req);
+          return send(res, 200, { user: { ...u, business: { id: u.businessId, name: businessName(u.businessId) } } });
+        }
 
         case 'GET /api/users': {
           const u = authenticate(req);
           if (u.role !== 'admin') throw new HttpError(403, 'Admins only');
-          return send(res, 200, { users: db.prepare('SELECT username, role, disabled, created_at FROM users ORDER BY username').all() });
+          return send(res, 200, { users: db.prepare('SELECT username, role, disabled, created_at FROM users WHERE business_id = ? ORDER BY username').all(u.businessId) });
         }
 
         case 'POST /api/users': {
@@ -334,7 +354,7 @@ export function createApp(opts: AppOptions): RequestListener {
           const role = b.role as Role;
           if (!ROLES.includes(role)) throw new HttpError(400, 'Role must be cashier, manager or admin');
           if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new HttpError(409, 'That username is taken');
-          createUser(username, validPassword(b.password), role);
+          createUser(username, validPassword(b.password), role, u.businessId);
           return send(res, 201, { username, role });
         }
 
@@ -344,6 +364,7 @@ export function createApp(opts: AppOptions): RequestListener {
           const b = await readJson(req);
           const target = validUsername(b.username);
           if (target === u.username) throw new HttpError(400, 'You cannot disable your own account');
+          if (!manageable(u, target)) throw new HttpError(404, 'No such user');
           db.prepare('UPDATE users SET disabled = ? WHERE username = ?').run(b.disabled === false ? 0 : 1, target);
           return send(res, 200, { ok: true });
         }
@@ -374,10 +395,43 @@ export function createApp(opts: AppOptions): RequestListener {
           const b = await readJson(req);
           const target = validUsername(b.username);
           if (target === u.username) throw new HttpError(400, 'Use "Change my password" for your own account');
-          if (!db.prepare('SELECT 1 FROM users WHERE username = ?').get(target)) throw new HttpError(404, 'No such user');
+          if (!manageable(u, target)) throw new HttpError(404, 'No such user');
           setPassword(target, validPassword(b.newPassword));
           failures.delete(target);
           return send(res, 200, { ok: true });
+        }
+
+        case 'GET /api/businesses': {
+          const u = authenticate(req);
+          if (!u.isSuper) throw new HttpError(403, 'Only the platform owner can manage businesses');
+          return send(res, 200, {
+            businesses: db.prepare(
+              'SELECT b.id, b.name, b.created_at, (SELECT COUNT(*) FROM users x WHERE x.business_id = b.id) AS users FROM businesses b ORDER BY b.created_at',
+            ).all(),
+          });
+        }
+
+        case 'POST /api/businesses': {
+          // the platform owner opens a new, separate business and its first admin
+          const u = authenticate(req);
+          if (!u.isSuper) throw new HttpError(403, 'Only the platform owner can manage businesses');
+          const b = await readJson(req);
+          const name = typeof b.name === 'string' ? b.name.trim() : '';
+          if (!name || name.length > 80) throw new HttpError(400, 'Business name is required (up to 80 characters)');
+          const adminUsername = validUsername(b.adminUsername);
+          const adminPassword = validPassword(b.adminPassword);
+          if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(adminUsername)) throw new HttpError(409, 'That username is taken');
+          const id = randomUUID();
+          db.exec('BEGIN');
+          try {
+            db.prepare('INSERT INTO businesses (id, name, created_at) VALUES (?, ?, ?)').run(id, name, now());
+            createUser(adminUsername, adminPassword, 'admin', id);
+            db.exec('COMMIT');
+          } catch (e) {
+            db.exec('ROLLBACK');
+            throw e;
+          }
+          return send(res, 201, { id, name, adminUsername });
         }
 
         case 'POST /api/sync':

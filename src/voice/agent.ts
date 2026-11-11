@@ -5,6 +5,7 @@ import * as A from '../actions';
 import { config, formatMoney } from '../config';
 import { currentLocationId, listLocations } from '../location';
 import { payPurchase, receivePurchase, supplierBalances, voidPurchase } from '../purchases';
+import { expiryReport } from '../lots';
 import { receiveTransfer, sendTransfer } from '../transfers';
 import { parseCommand, type Intent, type ItemSpec } from './parser';
 import { rank, resolveCustomer, resolveNamed, resolveProduct } from './matcher';
@@ -16,6 +17,7 @@ const ALLOWED: Record<string, Role[]> = {
   sell: ['cashier', 'manager', 'admin'],
   check_stock: ['cashier', 'manager', 'admin'],
   low_stock: ['cashier', 'manager', 'admin'],
+  expiring: ['cashier', 'manager', 'admin'],
   add_stock: ['manager', 'admin'],
   set_price: ['manager', 'admin'],
   report_today: ['manager', 'admin'],
@@ -155,6 +157,8 @@ export class VoiceAgent {
         return this.checkStock(intent.product);
       case 'low_stock':
         return this.lowStock();
+      case 'expiring':
+        return this.expiring();
       case 'report_today':
         return this.reportToday();
       case 'sell':
@@ -227,6 +231,18 @@ export class VoiceAgent {
     if (!low.length) return this.say('Nothing is running low. Stock looks fine.');
     const list = low.slice(0, 5).map((p) => `${p.name} (${num(p.stock)})`).join(', ');
     return this.say(`${low.length} item${low.length > 1 ? 's' : ''} running low: ${list}.`);
+  }
+
+  private async expiring(): Promise<AgentReply> {
+    const rows = await expiryReport(30);
+    if (!rows.length) return this.say('Nothing has expired or is about to expire.');
+    const gone = rows.filter((r) => r.expired);
+    const soon = rows.filter((r) => !r.expired);
+    const fmt = (r: (typeof rows)[number]) => `${r.name} (${num(r.remaining)})`;
+    const parts: string[] = [];
+    if (gone.length) parts.push(`${gone.length} already expired: ${gone.slice(0, 4).map(fmt).join(', ')}`);
+    if (soon.length) parts.push(`${soon.length} expiring within 30 days: ${soon.slice(0, 4).map(fmt).join(', ')}`);
+    return this.say(parts.join('. ') + '.');
   }
 
   private async reportToday(): Promise<AgentReply> {
