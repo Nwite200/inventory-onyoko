@@ -49,7 +49,20 @@ export function Login({ onServerChange }: { onServerChange: () => void }) {
   return (
     <div className="login">
       <form className="card form" onSubmit={submit}>
-        <h2>{config.appName}</h2>
+        <div className="login-brand">
+          {config.branding.loginLogo || config.branding.logo ? (
+            <img className="login-logo" src={config.branding.loginLogo || config.branding.logo} alt="" />
+          ) : (
+            <span className="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 28 28"><circle cx="13" cy="15" r="6.4" fill="none" stroke="currentColor" strokeWidth="3" /><circle cx="21" cy="7" r="2.6" fill="currentColor" /></svg>
+            </span>
+          )}
+          <span>
+            <strong>{config.appName}</strong>
+            <small>{config.branding.businessName || config.tagline}</small>
+          </span>
+        </div>
+        <h2>{needsSetup ? 'Create the owner account' : 'Welcome back'}</h2>
         <p className="muted small">{needsSetup ? t('login.firstTime') : t('login.signInToContinue')}</p>
         <label>
           {t('login.username')}

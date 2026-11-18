@@ -18,6 +18,7 @@ export function Shops({ isAdmin }: { isAdmin: boolean }) {
         This device is in
         <select
           aria-label="This device's shop"
+          disabled={!isAdmin}
           value={currentLocationId()}
           onChange={(e) => void setCurrentLocation(e.target.value).then(() => bump((n) => n + 1))}
         >

@@ -2,6 +2,7 @@
 // The model only returns a JSON intent; it never touches data. Every result is validated,
 // then goes through the same confirmation flow as rule-parsed commands.
 import { config } from '../config';
+import { api, getSession, serverMode } from '../auth';
 import type { Intent, ItemSpec } from './parser';
 
 export type LlmFallback = (text: string) => Promise<Intent | null>;
@@ -13,6 +14,8 @@ Schemas:
 {"type":"check_stock","product":string}
 {"type":"set_price","product":string,"price":number}
 {"type":"report_today"}
+{"type":"business_summary"}
+{"type":"top_products"}
 {"type":"low_stock"}
 {"type":"expiring"}
 {"type":"receive_purchase","items":[{"qty":number,"name":string,"cost":number|null}],"supplier":string,"paid":number|"full"|null}
@@ -81,6 +84,10 @@ export function validateIntent(x: unknown): Intent | null {
       return { type: 'receive_transfer', from: typeof o.from === 'string' && o.from.trim() ? o.from.trim() : undefined };
     case 'report_today':
       return { type: 'report_today' };
+    case 'business_summary':
+      return { type: 'business_summary' };
+    case 'top_products':
+      return { type: 'top_products' };
     case 'low_stock':
       return { type: 'low_stock' };
     case 'expiring':
@@ -114,23 +121,14 @@ export function ollamaFallback(baseUrl: string, model: string): LlmFallback {
   };
 }
 
-export function geminiFallback(apiKey: string, model: string): LlmFallback {
+export function serverFallback(token: string): LlmFallback {
   return async (text) => {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM }] },
-          contents: [{ role: 'user', parts: [{ text }] }],
-          generationConfig: { responseMimeType: 'application/json', temperature: 0 },
-        }),
-      },
-    );
-    if (!res.ok) return null;
-    const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-    return validateIntent(extractJson(data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''));
+    try {
+      const reply = await api<{ text: string }>('POST', '/api/ai/parse', { text }, token);
+      return validateIntent(extractJson(reply.text));
+    } catch {
+      return null;
+    }
   };
 }
 
@@ -138,6 +136,9 @@ export function geminiFallback(apiKey: string, model: string): LlmFallback {
 export function buildFallback(): LlmFallback | undefined {
   const l = config.llm;
   if (l.provider === 'ollama') return ollamaFallback(l.ollamaUrl, l.ollamaModel);
-  if (l.provider === 'gemini' && l.geminiKey) return geminiFallback(l.geminiKey, l.geminiModel);
+  if (l.provider === 'gemini' && serverMode()) {
+    const session = getSession();
+    if (session) return serverFallback(session.token);
+  }
   return undefined;
 }

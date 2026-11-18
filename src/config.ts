@@ -14,7 +14,6 @@ export interface LlmSettings {
   provider: 'none' | 'ollama' | 'gemini';
   ollamaUrl: string;
   ollamaModel: string;
-  geminiKey: string;
   geminiModel: string;
 }
 
@@ -32,6 +31,32 @@ export interface PrinterSettings {
   footer: string;
 }
 
+export interface BrandingSettings {
+  businessName: string;
+  logo: string;
+  loginLogo: string;
+  favicon: string;
+  secondaryColor: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
+  footer: string;
+  invoiceTerms: string;
+  receiptTemplate: 'classic' | 'compact' | 'modern';
+  showLogo: boolean;
+  showAddress: boolean;
+  showPhone: boolean;
+  showTax: boolean;
+  showQr: boolean;
+  qrText: string;
+}
+
+export interface NavigationSettings {
+  hidden: string[];
+  order: string[];
+}
+
 export interface AppConfig {
   appName: string;
   tagline: string;
@@ -45,16 +70,20 @@ export interface AppConfig {
   speechEngine: 'auto' | 'browser' | 'offline';
   preset: 'retail' | 'restaurant' | 'pharmacy' | 'custom';
   allowNegativeStock: boolean;
+  /** Amount above which refunds and voids need an approved request. 0 disables approvals. */
+  approvalThreshold: number;
   serverUrl: string;
   features: Features;
   llm: LlmSettings;
   printer: PrinterSettings;
+  branding: BrandingSettings;
+  navigation: NavigationSettings;
 }
 
 export const defaultConfig: AppConfig = {
   appName: 'OpenPOS',
   tagline: 'Sell and manage stock, even offline',
-  primaryColor: '#0f766e',
+  primaryColor: '#4f46e5',
   currencySymbol: '₦',
   locale: 'en-NG',
   speechLang: 'en-NG',
@@ -62,14 +91,35 @@ export const defaultConfig: AppConfig = {
   speechEngine: 'auto',
   preset: 'retail',
   allowNegativeStock: false,
+  approvalThreshold: 0,
   serverUrl: '',
   features: { voice: true, customers: true, reports: true, sales: true, purchases: true, transfers: true },
   printer: { mode: 'browser', paperMm: 58, baudRate: 9600, auto: false, cut: true, openDrawer: false, address: '', phone: '', footer: 'Thank you!' },
+  branding: {
+    businessName: 'My business',
+    logo: '',
+    loginLogo: '',
+    favicon: '',
+    secondaryColor: '#0ea5e9',
+    address: '',
+    phone: '',
+    email: '',
+    website: '',
+    footer: 'Thank you for your business',
+    invoiceTerms: 'Payment due on receipt',
+    receiptTemplate: 'classic',
+    showLogo: true,
+    showAddress: true,
+    showPhone: true,
+    showTax: true,
+    showQr: false,
+    qrText: '',
+  },
+  navigation: { hidden: [], order: [] },
   llm: {
     provider: 'none',
     ollamaUrl: 'http://localhost:11434',
     ollamaModel: 'llama3.2',
-    geminiKey: '',
     geminiModel: 'gemini-2.0-flash',
   },
 };
@@ -92,7 +142,9 @@ export function applyConfig(patch: Partial<AppConfig>): void {
   const features = { ...config.features, ...(patch.features ?? {}) };
   const llm = { ...config.llm, ...(patch.llm ?? {}) };
   const printer = { ...config.printer, ...(patch.printer ?? {}) };
-  Object.assign(config, patch, { features, llm, printer });
+  const branding = { ...config.branding, ...(patch.branding ?? {}) };
+  const navigation = { ...config.navigation, ...(patch.navigation ?? {}) };
+  Object.assign(config, patch, { features, llm, printer, branding, navigation });
 }
 
 export function saveConfig(patch: Partial<AppConfig>): void {
@@ -106,8 +158,21 @@ export function saveConfig(patch: Partial<AppConfig>): void {
 export function applyTheme(): void {
   if (typeof document === 'undefined') return;
   document.documentElement.style.setProperty('--primary', config.primaryColor);
+  document.documentElement.style.setProperty('--secondary', config.branding.secondaryColor);
   document.documentElement.style.setProperty('--paper', `${config.printer.paperMm}mm`);
   document.title = config.appName;
+  if (config.branding.favicon) {
+    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.href = config.branding.favicon;
+  } else {
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (link) link.href = '/icon.svg';
+  }
 }
 
 export async function initConfig(): Promise<void> {

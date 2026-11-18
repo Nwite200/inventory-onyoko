@@ -20,10 +20,10 @@ export async function printSale(sale: Sale, shopName?: string): Promise<void> {
   }
   const bytes = buildSaleReceipt(sale, {
     width: width(),
-    businessName: config.appName,
-    address: config.printer.address,
-    phone: config.printer.phone,
-    footer: config.printer.footer,
+    businessName: config.branding.businessName || config.appName,
+    address: config.branding.address || config.printer.address,
+    phone: config.branding.phone || config.printer.phone,
+    footer: config.branding.footer || config.printer.footer,
     shopName,
     cut: config.printer.cut,
     openDrawer: config.printer.openDrawer,
@@ -35,7 +35,7 @@ export async function printSale(sale: Sale, shopName?: string): Promise<void> {
 
 export async function printTestPage(): Promise<void> {
   const t = await transport();
-  await t.write(buildTestPage({ width: width(), businessName: config.appName, cut: config.printer.cut }));
+  await t.write(buildTestPage({ width: width(), businessName: config.branding.businessName || config.appName, cut: config.printer.cut }));
 }
 
 /** Prints price labels (name, barcode, price) one after another on the receipt printer. */

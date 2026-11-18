@@ -21,6 +21,8 @@ const ALLOWED: Record<string, Role[]> = {
   add_stock: ['manager', 'admin'],
   set_price: ['manager', 'admin'],
   report_today: ['manager', 'admin'],
+  business_summary: ['manager', 'admin'],
+  top_products: ['manager', 'admin'],
   receive_purchase: ['manager', 'admin'],
   pay_supplier: ['manager', 'admin'],
   supplier_balance: ['manager', 'admin'],
@@ -161,6 +163,10 @@ export class VoiceAgent {
         return this.expiring();
       case 'report_today':
         return this.reportToday();
+      case 'business_summary':
+        return this.businessSummary();
+      case 'top_products':
+        return this.topProducts();
       case 'sell':
         return this.prepareSell(intent);
       case 'add_stock':
@@ -250,6 +256,22 @@ export class VoiceAgent {
     if (!s.count) return this.say('No sales yet today.');
     const top = s.top.slice(0, 3).map((t) => `${t.name} (${num(t.qty)})`).join(', ');
     return this.say(`Today: ${s.count} sale${s.count > 1 ? 's' : ''}, ${formatMoney(s.total)} total. Top sellers: ${top}.`);
+  }
+
+  private async topProducts(): Promise<AgentReply> {
+    const s = await A.salesSummary(A.startOfDay() - 29 * 86_400_000, 'all');
+    if (!s.top.length) return this.say('No sales in the last 30 days.');
+    return this.say(`Best sellers in 30 days: ${s.top.map((t) => `${t.name} (${num(t.qty)})`).join(', ')}.`);
+  }
+
+  private async businessSummary(): Promise<AgentReply> {
+    const week = await A.salesSummary(A.startOfDay() - 6 * 86_400_000, 'all');
+    const low = await A.lowStock();
+    const expenses = (await db.expenses.toArray()).filter((e) => e.at >= A.startOfDay() - 6 * 86_400_000).reduce((n, e) => n + e.amount, 0);
+    const products = await db.products.toArray();
+    const stockValue = products.reduce((n, p) => n + Math.max(0, p.stock) * p.cost, 0);
+    const top = week.top.slice(0, 3).map((t) => t.name).join(', ');
+    return this.say(`Last 7 days: ${week.count} sales, ${formatMoney(week.total)}. Expenses ${formatMoney(expenses)}. Stock at cost ${formatMoney(stockValue)}. ${low.length} item${low.length === 1 ? '' : 's'} low${top ? `; top sellers ${top}` : ''}.`);
   }
 
   // ---- write intents (need confirmation) ----------------------------------------------

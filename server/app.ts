@@ -5,11 +5,29 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { ROLES, canPush, hashPassword, signToken, verifyPassword, verifyToken, type Role } from './auth.ts';
 
+const ADVANCED_TABLES = new Set([
+  'serials', 'bins', 'binMovements', 'pickTasks', 'boms', 'productionOrders', 'assets', 'budgets',
+  'employees', 'payslips', 'currencies', 'taxRates', 'bankAccounts', 'bankTransactions', 'approvals',
+  'saleDocuments', 'customerPayments', 'categories',
+]);
+
+function isAdvancedPayload(table: unknown, record: unknown, op: string): boolean {
+  if (typeof table !== 'string' || !ADVANCED_TABLES.has(table)) return false;
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
+  const r = record as Record<string, unknown>;
+  if (typeof r.id !== 'string' || !r.id || r.id.length > 80) return false;
+  if (op === 'upsert' && typeof r.at === 'number' && !Number.isFinite(r.at)) return false;
+  return true;
+}
+
 const TOKEN_TTL_MS = 14 * 24 * 3600 * 1000;
 const MAX_BODY = 2 * 1024 * 1024;
 const PULL_LIMIT = 500;
 const CASHIER_VOID_WINDOW_MS = 5 * 60 * 1000;
-const ENTITIES = new Set(['product', 'stock_movement', 'sale', 'customer', 'location', 'supplier', 'purchase', 'transfer', 'lot']);
+const ENTITIES = new Set([
+  'product', 'stock_movement', 'sale', 'customer', 'location', 'supplier', 'purchase', 'transfer', 'lot',
+  'expense', 'sale_return', 'cash_register', 'journal', 'advanced',
+]);
 
 class HttpError extends Error {
   status: number;
@@ -25,6 +43,9 @@ export interface AppOptions {
   corsOrigin?: string;
   staticDir?: string;
   now?: () => number;
+  approvalThreshold?: number;
+  geminiKey?: string;
+  geminiModel?: string;
 }
 
 interface AuthUser {
@@ -44,7 +65,9 @@ const MIME: Record<string, string> = {
 export function createApp(opts: AppOptions): RequestListener {
   const { db, secret } = opts;
   const now = opts.now ?? Date.now;
+  const approvalThreshold = Math.max(0, opts.approvalThreshold ?? 0);
   const failures = new Map<string, { count: number; until: number }>();
+  const aiUsage = new Map<string, { count: number; reset: number }>();
 
   const send = (res: ServerResponse, status: number, body: unknown): void => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -130,6 +153,9 @@ export function createApp(opts: AppOptions): RequestListener {
   const checkPayload = (entity: string, op: string, p: unknown): string | null => {
     if (!p || typeof p !== 'object') return 'payload must be an object';
     const o = p as Record<string, unknown>;
+    if (entity === 'advanced') {
+      return isAdvancedPayload(o.table, o.record, op) ? null : 'bad advanced record';
+    }
     if (typeof o.id !== 'string' || !o.id || o.id.length > 64) return 'payload.id is required';
     if (entity === 'sale' && op === 'create') {
       if (!Array.isArray(o.items) || o.items.length === 0 || o.items.length > 200) return 'sale needs 1-200 items';
@@ -160,12 +186,58 @@ export function createApp(opts: AppOptions): RequestListener {
     if (entity === 'transfer') {
       if (op === 'create' && (!goodItems(false) || typeof o.fromLocationId !== 'string' || typeof o.toLocationId !== 'string' || o.fromLocationId === o.toLocationId)) return 'bad transfer';
     }
+    if (entity === 'expense' && op === 'create') {
+      if (typeof o.category !== 'string' || !o.category.trim() || o.category.length > 80) return 'expense needs a category';
+      if (!(Number(o.amount) > 0) || !Number.isFinite(Number(o.amount)) || !Number.isFinite(o.at)) return 'bad expense amount';
+      if (typeof o.paymentMethod !== 'string' || !o.paymentMethod) return 'expense needs a payment method';
+    }
+    if (entity === 'sale_return' && op === 'create') {
+      if (typeof o.saleId !== 'string' || !o.saleId || typeof o.saleNumber !== 'string') return 'refund needs its original sale';
+      if (!(Number(o.totalRefunded) >= 0) || !Number.isFinite(o.at)) return 'bad refund total';
+      if (!Array.isArray(o.items) || o.items.length === 0 || o.items.length > 200) return 'refund needs 1-200 items';
+      for (const it of o.items as Record<string, unknown>[]) {
+        if (!it || typeof it.productId !== 'string' || !(Number(it.qty) > 0) || !(Number(it.refundAmount) >= 0)) return 'bad refund item';
+        if (it.condition !== 'restock' && it.condition !== 'damaged') return 'bad refund condition';
+      }
+    }    if (entity === 'cash_register') {
+      if (!(Number(o.openingCash) >= 0) || !Number.isFinite(o.openedAt)) return 'bad register';
+      if (op === 'close' && (!(Number(o.closingCash) >= 0) || !(Number(o.expectedCash) >= 0))) return 'bad register close';
+    }
+    if (entity === 'journal' && op === 'create') {
+      if (typeof o.memo !== 'string' || !o.memo.trim() || o.memo.length > 300) return 'journal needs a description';
+      if (typeof o.number !== 'string' || !Number.isFinite(o.date)) return 'bad journal header';
+      if (!Array.isArray(o.lines) || o.lines.length < 2 || o.lines.length > 60) return 'journal needs 2-60 lines';
+      let debit = 0;
+      let credit = 0;
+      for (const l of o.lines as Record<string, unknown>[]) {
+        const dr = Number(l?.debit);
+        const cr = Number(l?.credit);
+        if (!l || typeof l.account !== 'string' || !/^\d{4}$/.test(l.account)) return 'bad journal account';
+        if (!Number.isFinite(dr) || !Number.isFinite(cr) || dr < 0 || cr < 0) return 'bad journal amount';
+        if (dr > 0 && cr > 0) return 'journal line has both debit and credit';
+        if (dr === 0 && cr === 0) return 'empty journal line';
+        debit += dr;
+        credit += cr;
+      }
+      if (Math.abs(debit - credit) >= 0.005) return 'journal is not balanced';
+    }
+    if (entity === 'advanced') {
+      const table = o.table;
+      const record = o.record;
+      if (!isAdvancedPayload(table, record, op)) return 'bad advanced record';
+    }
     return null;
   };
 
   /** Cashiers keep the shelves right but never see what the shop pays. Returns null = send nothing. */
   const forCashier = (entity: string, op: string, payload: Record<string, unknown>): Record<string, unknown> | null => {
     if (entity === 'supplier') return null;
+    if (entity === 'expense' || entity === 'journal') return null; // financial detail stays with managers
+    if (entity === 'advanced') {
+      // tills still need serials, bins, tax rules and currencies to complete a sale
+      const table = String(payload.table ?? '');
+      return ['serials', 'bins', 'binMovements', 'taxRates', 'currencies', 'approvals'].includes(table) ? payload : null;
+    }
     if (entity === 'purchase') {
       if (op === 'pay') return null;
       const items = ((payload.items ?? []) as { productId: string; qty: number }[]).map((i) => ({ productId: i.productId, qty: i.qty }));
@@ -174,6 +246,11 @@ export function createApp(opts: AppOptions): RequestListener {
     if (entity === 'product') {
       const { cost: _cost, costAt: _costAt, ...rest } = payload;
       return rest;
+    }
+    if (entity === 'sale') {
+      // sale lines carry the cost at the time of sale; a cashier must not see it
+      const items = ((payload.items ?? []) as Record<string, unknown>[]).map(({ cost: _cost, ...rest }) => rest);
+      return { ...payload, items };
     }
     return payload;
   };
@@ -193,8 +270,25 @@ export function createApp(opts: AppOptions): RequestListener {
     const sentTransfer = db.prepare(
       "SELECT payload FROM changes WHERE business_id = ? AND entity = 'transfer' AND op = 'create' AND json_extract(payload, '$.id') = ? LIMIT 1",
     );
+    const seenChange = db.prepare('SELECT 1 AS x FROM changes WHERE device_id = ? AND client_id = ?');
+    const saleById = db.prepare(
+      "SELECT payload FROM changes WHERE business_id = ? AND entity = 'sale' AND op = 'create' AND json_extract(payload, '$.id') = ? LIMIT 1",
+    );
+    const returnsForSale = db.prepare(
+      "SELECT payload FROM changes WHERE business_id = ? AND entity = 'sale_return' AND op = 'create' AND json_extract(payload, '$.saleId') = ?",
+    );
     const accepted: number[] = [];
     const rejected: { id: number; reason: string }[] = [];
+    const approvedFor = db.prepare(
+      `SELECT 1 AS ok FROM changes
+       WHERE business_id = ? AND entity = 'advanced' AND op = 'upsert'
+         AND json_extract(payload, '$.table') = 'approvals'
+         AND json_extract(payload, '$.record.kind') = ?
+         AND json_extract(payload, '$.record.entityId') = ?
+         AND json_extract(payload, '$.record.status') = 'approved'
+         AND CAST(json_extract(payload, '$.record.amount') AS REAL) >= ?
+       LIMIT 1`,
+    );
 
     db.exec('BEGIN');
     try {
@@ -212,6 +306,69 @@ export function createApp(opts: AppOptions): RequestListener {
           rejected.push({ id, reason: problem });
           continue;
         }
+        // A retry of a change the server already stored is accepted silently (never applied twice).
+        if (seenChange.get(deviceId, id)) {
+          accepted.push(id);
+          continue;
+        }
+        if (entity === 'sale_return' && op === 'create') {
+          // Refunds may not exceed what was sold on the original sale, counting earlier refunds.
+          const refund = raw.payload as { saleId: string; items: { productId: string; qty: number }[]; totalRefunded?: number };
+          const soldRow = saleById.get(user.businessId, refund.saleId) as { payload: string } | undefined;
+          if (!soldRow) {
+            rejected.push({ id, reason: 'refund refers to a sale the server has not received' });
+            continue;
+          }
+          const sold = (JSON.parse(soldRow.payload) as { items: { productId: string; qty: number }[] }).items;
+          const soldQty = new Map<string, number>();
+          for (const it of sold) soldQty.set(it.productId, (soldQty.get(it.productId) ?? 0) + Number(it.qty));
+          const already = new Map<string, number>();
+          for (const row of returnsForSale.all(user.businessId, refund.saleId) as { payload: string }[]) {
+            const prior = JSON.parse(row.payload) as { items: { productId: string; qty: number }[] };
+            for (const it of prior.items) already.set(it.productId, (already.get(it.productId) ?? 0) + Number(it.qty));
+          }
+          const excessive = refund.items.some((it) => Number(it.qty) > (soldQty.get(it.productId) ?? 0) - (already.get(it.productId) ?? 0) + 0.0001);
+          if (excessive) {
+            rejected.push({ id, reason: 'refund exceeds the quantity sold or already refunded' });
+            continue;
+          }
+          if (approvalThreshold > 0 && Number(refund.totalRefunded ?? 0) > approvalThreshold && !approvedFor.get(user.businessId, 'refund', refund.saleId, Number(refund.totalRefunded ?? 0))) {
+            rejected.push({ id, reason: 'this refund needs an approved manager request' });
+            continue;
+          }
+        }
+        if (entity === 'sale' && op === 'void' && approvalThreshold > 0) {
+          const voidedId = String((raw.payload as { id: string }).id);
+          const soldRow = saleById.get(user.businessId, voidedId) as { payload: string } | undefined;
+          const total = soldRow ? Number((JSON.parse(soldRow.payload) as { total?: number }).total ?? 0) : 0;
+          if (total > approvalThreshold && !approvedFor.get(user.businessId, 'void', voidedId, total)) {
+            rejected.push({ id, reason: 'this void needs an approved manager request' });
+            continue;
+          }
+        }
+        if (entity === 'expense' && op === 'create' && approvalThreshold > 0) {
+          const e = raw.payload as { id: string; amount: number };
+          if (Number(e.amount) > approvalThreshold && !approvedFor.get(user.businessId, 'expense', e.id, Number(e.amount))) {
+            rejected.push({ id, reason: 'this expense needs an approved manager request' });
+            continue;
+          }
+        }
+        if (entity === 'journal' && op === 'create' && approvalThreshold > 0) {
+          const j = raw.payload as { approvalKey?: string; lines: { debit: number; credit: number }[] };
+          const total = (j.lines ?? []).reduce((sum, l) => sum + Number(l.debit || 0), 0);
+          if (total > approvalThreshold && (!j.approvalKey || !approvedFor.get(user.businessId, 'journal', j.approvalKey, total))) {
+            rejected.push({ id, reason: 'this journal needs an approved manager request' });
+            continue;
+          }
+        }
+        if (entity === 'stock_movement' && op === 'create' && approvalThreshold > 0) {
+          const m = raw.payload as { reason?: string; value?: number; approvalKey?: string };
+          const value = Number(m.value ?? 0);
+          if ((m.reason ?? '').startsWith('adjustment') && value > approvalThreshold && (!m.approvalKey || !approvedFor.get(user.businessId, 'stock_adjustment', m.approvalKey, value))) {
+            rejected.push({ id, reason: 'this stock adjustment needs an approved manager request' });
+            continue;
+          }
+        }
         let payload = raw.payload as Record<string, unknown>;
         if (entity === 'transfer' && op === 'receive') {
           // stock arrives exactly as it was sent, whatever the device claims
@@ -224,6 +381,11 @@ export function createApp(opts: AppOptions): RequestListener {
           payload = { id: t.id, toLocationId: t.toLocationId, items: t.items };
         }
         let verdict = canPush(user.role, entity, op);
+        if (verdict !== 'yes' && user.role === 'cashier' && entity === 'advanced') {
+          const advanced = payload as { table?: string; record?: { status?: string } };
+          // a till may ask for approval; only a manager can publish the decision
+          if (advanced.table === 'approvals' && advanced.record?.status === 'pending') verdict = 'yes';
+        }
         if (verdict === 'check-void') {
           const created = saleOwner.get(user.businessId, (raw.payload as { id: string }).id) as { user: string; at: number } | undefined;
           verdict = created && created.user === user.username && at - created.at <= CASHIER_VOID_WINDOW_MS ? 'yes' : 'no';
@@ -287,6 +449,11 @@ export function createApp(opts: AppOptions): RequestListener {
     res.setHeader('Access-Control-Allow-Origin', opts.corsOrigin ?? '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), geolocation=()');
+    if (req.url?.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
     if (req.method === 'OPTIONS') {
       res.writeHead(204).end();
       return;
@@ -302,6 +469,44 @@ export function createApp(opts: AppOptions): RequestListener {
       switch (route) {
         case 'GET /api/health':
           return send(res, 200, { ok: true });
+
+        case 'GET /api/policy': {
+          authenticate(req);
+          return send(res, 200, { approvalThreshold });
+        }
+
+        case 'POST /api/ai/parse': {
+          const u = authenticate(req);
+          if (!opts.geminiKey) throw new HttpError(503, 'Server AI is not configured. Set GEMINI_API_KEY on the server.');
+          const b = await readJson(req);
+          const text = typeof b.text === 'string' ? b.text.trim() : '';
+          if (!text) throw new HttpError(400, 'Command text is required');
+          if (text.length > 2000) throw new HttpError(400, 'Command text is too long');
+          const slot = aiUsage.get(u.username);
+          if (slot && slot.reset > now() && slot.count >= 30) throw new HttpError(429, 'AI rate limit reached. Try again in a minute.');
+          aiUsage.set(u.username, { count: slot && slot.reset > now() ? slot.count + 1 : 1, reset: slot && slot.reset > now() ? slot.reset : now() + 60_000 });
+          const system = 'Convert a shop command into JSON only. Never invent products or prices. Return {"type":"unknown"} if unsure. Allowed types: sell, add_stock, check_stock, set_price, report_today, business_summary, top_products, low_stock, expiring, receive_purchase, pay_supplier, supplier_balance, transfer, receive_transfer.';
+          let response: Response;
+          try {
+            response = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(opts.geminiModel ?? 'gemini-2.0-flash')}:generateContent`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': opts.geminiKey },
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: system }] },
+                  contents: [{ role: 'user', parts: [{ text }] }],
+                  generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+                }),
+              },
+            );
+          } catch {
+            throw new HttpError(502, 'The AI provider could not be reached');
+          }
+          if (!response.ok) throw new HttpError(502, `AI provider returned ${response.status}`);
+          const data = (await response.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+          return send(res, 200, { text: data.candidates?.[0]?.content?.parts?.[0]?.text ?? '' });
+        }
 
         case 'GET /api/auth/status':
           return send(res, 200, { needsSetup: userCount() === 0 });
@@ -409,6 +614,73 @@ export function createApp(opts: AppOptions): RequestListener {
               'SELECT b.id, b.name, b.created_at, (SELECT COUNT(*) FROM users x WHERE x.business_id = b.id) AS users FROM businesses b ORDER BY b.created_at',
             ).all(),
           });
+        }
+
+        case 'GET /api/branding': {
+          const u = authenticate(req);
+          const row = db.prepare('SELECT branding FROM businesses WHERE id = ?').get(u.businessId) as { branding: string } | undefined;
+          let branding: unknown = {};
+          try { branding = JSON.parse(row?.branding ?? '{}'); } catch { branding = {}; }
+          return send(res, 200, { branding });
+        }
+
+        case 'PUT /api/branding': {
+          const u = authenticate(req);
+          if (u.role !== 'admin') throw new HttpError(403, 'Only a business administrator can publish tenant branding');
+          const b = await readJson(req);
+          const branding = b.branding;
+          if (!branding || typeof branding !== 'object' || Array.isArray(branding)) throw new HttpError(400, 'branding must be an object');
+          const text = JSON.stringify(branding);
+          if (text.length > 1_500_000) throw new HttpError(400, 'Branding payload is too large (logos should be under 300 KB each)');
+          db.prepare('UPDATE businesses SET branding = ? WHERE id = ?').run(text, u.businessId);
+          return send(res, 200, { ok: true });
+        }
+
+        case 'GET /api/admin/overview': {
+          const u = authenticate(req);
+          if (!u.isSuper) throw new HttpError(403, 'Platform owner only');
+          const businesses = db.prepare(
+            `SELECT b.id, b.name, b.created_at,
+               (SELECT COUNT(*) FROM users x WHERE x.business_id = b.id) AS users,
+               (SELECT COUNT(*) FROM changes c WHERE c.business_id = b.id) AS changes,
+               (SELECT MAX(received_at) FROM changes c WHERE c.business_id = b.id) AS last_change
+             FROM businesses b ORDER BY b.created_at`,
+          ).all();
+          const totals = db.prepare(
+            `SELECT (SELECT COUNT(*) FROM businesses) AS businesses,
+                    (SELECT COUNT(*) FROM users) AS users,
+                    (SELECT COUNT(*) FROM changes) AS changes`,
+          ).get();
+          let dbBytes = 0;
+          try {
+            const pages = db.prepare('PRAGMA page_count').get() as { page_count: number } | undefined;
+            const size = db.prepare('PRAGMA page_size').get() as { page_size: number } | undefined;
+            dbBytes = (pages?.page_count ?? 0) * (size?.page_size ?? 0);
+          } catch {
+            dbBytes = 0;
+          }
+          return send(res, 200, {
+            totals,
+            businesses,
+            health: {
+              uptimeSeconds: Math.round(process.uptime()),
+              memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+              dbBytes,
+              node: process.version,
+            },
+          });
+        }
+
+        case 'GET /api/admin/audit': {
+          const u = authenticate(req);
+          if (!u.isSuper) throw new HttpError(403, 'Platform owner only');
+          const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 40));
+          const events = db.prepare(
+            `SELECT c.seq, c.entity, c.op, c.at, c.user, c.business_id, b.name AS business
+             FROM changes c LEFT JOIN businesses b ON b.id = c.business_id
+             ORDER BY c.seq DESC LIMIT ?`,
+          ).all(limit);
+          return send(res, 200, { events });
         }
 
         case 'POST /api/businesses': {

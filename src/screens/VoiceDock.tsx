@@ -6,6 +6,7 @@ import { speak, type SttEngine } from '../voice/speech';
 import { offlineStt } from '../voice/offlineStt';
 import { canFallBackToOffline, pickEngine } from '../voice/engine';
 import { loadHint } from '../voice/hint';
+import { Icon } from '../components/Icon';
 
 interface Line {
   who: 'you' | 'bot';
@@ -13,7 +14,7 @@ interface Line {
 }
 type Mode = 'idle' | 'loading' | 'listening' | 'transcribing';
 
-const HINTS = ['Sell two rice to Mama Ade, cash', 'Add fifty cartons of indomie', 'How many coke do I have?', "What's running low?", 'What did I sell today?'];
+const HINTS = ['Sell two rice to Mama Ade, cash', 'Add fifty cartons of indomie', 'How many coke do I have?', "What's running low?", 'What did I sell today?', "What's expiring?"];
 
 // extra examples for people who can buy stock and move it between shops
 const MANAGER_HINTS = ['Received 20 rice from Dangote at 41000 each, paid 500000', 'How much do I owe?', 'Transfer 5 rice to Ikeja branch'];
@@ -32,7 +33,8 @@ export function VoiceDock({ role }: { role: Role }) {
   if (!agent.current) agent.current = new VoiceAgent(() => roleRef.current, buildFallback());
 
   const [open, setOpen] = useState(false);
-  const [log, setLog] = useState<Line[]>([]);
+  const [log, setLog] = useState<Line[]>(() => { try { return JSON.parse(localStorage.getItem('openpos.copilot.log') ?? '[]') as Line[]; } catch { return []; } });
+  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [text, setText] = useState('');
   const [heard, setHeard] = useState('');
   const [mode, setMode] = useState<Mode>('idle');
@@ -46,6 +48,21 @@ export function VoiceDock({ role }: { role: Role }) {
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
   }, [log, heard]);
+  useEffect(() => {
+    try { localStorage.setItem('openpos.copilot.log', JSON.stringify(log.slice(-50))); } catch { /* storage full */ }
+  }, [log]);
+  useEffect(() => {
+    const on = () => setOnline(true);
+    const off = () => setOnline(false);
+    window.addEventListener('online', on);
+    window.addEventListener('offline', off);
+    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+  }, []);
+  useEffect(() => {
+    const openDock = () => setOpen(true);
+    window.addEventListener('openpos-voice', openDock);
+    return () => window.removeEventListener('openpos-voice', openDock);
+  }, []);
   useEffect(() => {
     return () => {
       stopRef.current?.();
@@ -121,17 +138,19 @@ export function VoiceDock({ role }: { role: Role }) {
   return (
     <div className={`dock ${open ? 'open' : ''}`}>
       {!open ? (
-        <button className="fab" onClick={() => setOpen(true)} aria-label="Open voice assistant">
-          🎤 Assistant
+        <button className="fab" onClick={() => setOpen(true)} aria-label="Open business copilot" title="Business copilot">
+          <Icon name="sparkle" size={22} />
+          <span>Copilot</span>
         </button>
       ) : (
         <div className="dock-panel">
           <div className="dock-head">
-            <strong>Voice assistant</strong>
+            <div className="copilot-title"><strong>Business copilot</strong><span className={`copilot-state ${online ? 'online' : 'offline'}`}>{online ? 'Rules + optional AI' : 'Offline · rules only'}</span></div>
             <label className="small check">
-              <input type="checkbox" checked={talk} onChange={(e) => setTalk(e.target.checked)} /> Speak replies
+              <input type="checkbox" checked={talk} onChange={(e) => setTalk(e.target.checked)} /> Speak
             </label>
-            <button onClick={() => setOpen(false)} aria-label="Close">✕</button>
+            <button className="icon-btn" onClick={() => setLog([])} aria-label="Clear conversation" title="Clear conversation"><Icon name="trash" size={14} /></button>
+            <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Close"><Icon name="close" size={15} /></button>
           </div>
           <div className="log">
             {log.length === 0 && (
@@ -182,7 +201,7 @@ export function VoiceDock({ role }: { role: Role }) {
             >
               {mode === 'listening' ? '■' : busy ? '…' : '🎤'}
             </button>
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Speak or type a command…" />
+            <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask about sales, stock, a purchase, or tell me to sell…" />
             <button className="primary">Send</button>
           </form>
         </div>

@@ -59,6 +59,7 @@ export function Settings({ canManage, isAdmin, onChange }: { canManage: boolean;
     <div className="settings">
       <div className="card form">
         <h3>Branding (white-label)</h3>
+        <p className="small muted">For logos, receipt/invoice layouts, QR codes and sidebar customisation, use <strong>Branding &amp; receipts</strong> in the sidebar. These fields remain the deployment fallback.</p>
         <label>App name<input value={draft.appName} onChange={(e) => set('appName', e.target.value)} /></label>
         <label>Tagline<input value={draft.tagline} onChange={(e) => set('tagline', e.target.value)} /></label>
         <label>Brand colour<input type="color" value={draft.primaryColor} onChange={(e) => set('primaryColor', e.target.value)} /></label>
@@ -117,9 +118,8 @@ export function Settings({ canManage, isAdmin, onChange }: { canManage: boolean;
         )}
         {draft.llm.provider === 'gemini' && (
           <>
-            <label>API key<input type="password" value={draft.llm.geminiKey} onChange={(e) => llm('geminiKey', e.target.value)} /></label>
-            <label>Model<input value={draft.llm.geminiModel} onChange={(e) => llm('geminiModel', e.target.value)} /></label>
-            <p className="small muted">The key is stored only on this device.</p>
+            <p className="small muted">Online AI is proxied by your server. Set <code>GEMINI_API_KEY</code> (and optionally <code>GEMINI_MODEL</code>) in the server environment; the key is never sent to this device.</p>
+            <p className="small muted">If the server is offline, the deterministic rule parser still handles normal commands.</p>
           </>
         )}
       </div>

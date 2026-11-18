@@ -35,7 +35,13 @@ if (users === 0 && ADMIN_USER && ADMIN_PASSWORD) {
 }
 
 const staticDir = resolve(here, '../dist');
-const options = { db, secret, corsOrigin: process.env.CORS_ORIGIN, staticDir: existsSync(staticDir) ? staticDir : undefined };
+const options = {
+  db, secret, corsOrigin: process.env.CORS_ORIGIN,
+  staticDir: existsSync(staticDir) ? staticDir : undefined,
+  approvalThreshold: Math.max(0, Number(process.env.APPROVAL_THRESHOLD ?? 0)),
+  geminiKey: process.env.GEMINI_API_KEY,
+  geminiModel: process.env.GEMINI_MODEL,
+};
 const tls = loadTls(dirname(dbPath));
 
 if (tls) {

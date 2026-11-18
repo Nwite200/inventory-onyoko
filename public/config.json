@@ -1,8 +1,8 @@
 {
   "appName": "OpenPOS",
   "tagline": "Sell and manage stock, even offline",
-  "primaryColor": "#0f766e",
-  "currencySymbol": "₦",
+  "primaryColor": "#4f46e5",
+  "currencySymbol": "\u20a6",
   "locale": "en-NG",
   "preset": "retail"
 }

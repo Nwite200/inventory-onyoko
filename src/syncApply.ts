@@ -4,7 +4,7 @@
 //  - Records are keyed by client-generated ids, so applying the same change twice does nothing.
 //  - Prices are last-write-wins, using the time the price was set (priceAt).
 // These writes deliberately bypass the outbox, otherwise every change would bounce back to the server forever.
-import { db, type Lot, type Product, type Purchase, type Sale, type StockMovement, type Transfer } from './db';
+import { db, type CashRegister, type Expense, type JournalEntry, type Lot, type Product, type Purchase, type Sale, type SaleReturn, type StockMovement, type Transfer } from './db';
 import { MAIN_LOCATION } from './location';
 import { recordMovement } from './stock';
 
@@ -55,6 +55,16 @@ async function applyOne(c: RemoteChange): Promise<void> {
       await db.sales.add(sale);
       for (const l of sale.items) {
         await recordMovement({ id: `${sale.id}:${l.productId}:sale`, productId: l.productId, delta: -l.qty, reason: 'sale', ref: sale.id, at: sale.at, locationId: sale.locationId });
+        for (const serialId of l.serials ?? []) {
+          const serial = await db.serials.get(serialId);
+          if (serial) await db.serials.put({ ...serial, status: 'sold', saleId: sale.id, updatedAt: Date.now() });
+        }
+        for (const pick of l.binPicks ?? []) {
+          await db.binMovements.put({
+            id: `${sale.id}:${l.productId}:${pick.binId}:bin`, productId: l.productId, binId: pick.binId,
+            delta: -pick.qty, reason: 'sale_pick', ref: sale.id, at: sale.at, locationId: sale.locationId ?? MAIN_LOCATION,
+          });
+        }
       }
       return;
     }
@@ -63,6 +73,16 @@ async function applyOne(c: RemoteChange): Promise<void> {
       if (!sale || sale.status === 'voided') return;
       for (const l of sale.items) {
         await recordMovement({ id: `${sale.id}:${l.productId}:void`, productId: l.productId, delta: l.qty, reason: 'void', ref: sale.id, at: c.at, locationId: sale.locationId });
+        for (const serialId of l.serials ?? []) {
+          const serial = await db.serials.get(serialId);
+          if (serial) await db.serials.put({ ...serial, status: 'in_stock', saleId: undefined, updatedAt: Date.now() });
+        }
+        for (const pick of l.binPicks ?? []) {
+          await db.binMovements.put({
+            id: `${sale.id}:${l.productId}:${pick.binId}:voidbin`, productId: l.productId, binId: pick.binId,
+            delta: pick.qty, reason: 'sale_void', ref: sale.id, at: c.at, locationId: sale.locationId ?? MAIN_LOCATION,
+          });
+        }
       }
       await db.sales.put({ ...sale, status: 'voided' });
       return;
@@ -138,13 +158,76 @@ async function applyOne(c: RemoteChange): Promise<void> {
       if (name && !dupe) await db.customers.add({ id: p.id, name });
       return;
     }
+    case 'expense:create': {
+      if (!(await db.expenses.get(p.id))) await db.expenses.add(p as Expense);
+      return;
+    }
+    case 'sale_return:create': {
+      if (await db.returns.get(p.id)) return;
+      const ret = p as SaleReturn;
+      await db.returns.add(ret);
+      for (const it of ret.items) {
+        if (it.condition !== 'restock') continue;
+        await recordMovement({
+          id: `${ret.id}:${it.productId}:restock`,
+          productId: it.productId,
+          delta: it.qty,
+          reason: 'return_restock',
+          ref: ret.id,
+          at: ret.at,
+          locationId: ret.locationId,
+        });
+      }
+      for (const it of ret.items) {
+        for (const b of it.binReturns ?? []) {
+          await db.binMovements.put({
+            id: `${ret.id}:${it.productId}:${b.binId}:bin`, productId: it.productId, binId: b.binId,
+            delta: b.qty, reason: 'return_restock', ref: ret.id, at: ret.at, locationId: ret.locationId ?? MAIN_LOCATION,
+          });
+        }
+        for (const serialId of it.serials ?? []) {
+          const serial = await db.serials.get(serialId);
+          if (serial) await db.serials.put({
+            ...serial,
+            status: it.condition === 'restock' ? 'in_stock' : 'damaged',
+            saleId: it.condition === 'restock' ? undefined : serial.saleId,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+      return;
+    }
+    case 'cash_register:open': {
+      if (!(await db.registers.get(p.id))) await db.registers.add(p as CashRegister);
+      return;
+    }
+    case 'cash_register:close': {
+      const existing = await db.registers.get(p.id);
+      if (!existing) await db.registers.add(p as CashRegister);
+      else await db.registers.put({ ...existing, ...(p as CashRegister) });
+      return;
+    }
+    case 'journal:create': {
+      if (!(await db.journals.get(p.id))) await db.journals.add(p as JournalEntry);
+      return;
+    }
+    case 'advanced:upsert': {
+      if (typeof p.table !== 'string' || !p.record || typeof p.record !== 'object') return;
+      await db.table(p.table).put(p.record as Record<string, unknown>);
+      return;
+    }
+    case 'advanced:delete': {
+      if (typeof p.table !== 'string' || typeof p.record?.id !== 'string') return;
+      await db.table(p.table).delete(p.record.id);
+      return;
+    }
     default:
     // unknown change from a newer server version: skip rather than crash
   }
 }
 
 export async function applyChanges(changes: RemoteChange[]): Promise<void> {
-  await db.transaction('rw', [db.products, db.stockMovements, db.sales, db.customers, db.locations, db.suppliers, db.purchases, db.transfers, db.lots], async () => {
+  await db.transaction('rw', db.tables, async () => {
     for (const c of changes) await applyOne(c);
   });
 }
@@ -156,7 +239,7 @@ export async function applyChanges(changes: RemoteChange[]): Promise<void> {
  */
 export async function undoRefused(entity: string, op: string, payload: Record<string, any>): Promise<void> {
   const key = `${entity}:${op}`;
-  await db.transaction('rw', [db.products, db.stockMovements, db.sales, db.locations, db.suppliers, db.purchases, db.transfers, db.lots], async () => {
+  await db.transaction('rw', db.tables, async () => {
     const reverse = async (items: { productId: string; qty: number }[], sign: 1 | -1, loc: string, ref: string, tag: string, reason: string) => {
       for (const it of items) {
         await recordMovement({ id: `${ref}:${it.productId}:${tag}`, productId: it.productId, delta: sign * it.qty, reason, ref, at: Date.now(), locationId: loc });
@@ -187,6 +270,23 @@ export async function undoRefused(entity: string, op: string, payload: Record<st
       case 'supplier:create':
         await db.suppliers.delete(payload.id);
         break;
+      case 'expense:create':
+        await db.expenses.delete(payload.id);
+        break;
+      case 'sale_return:create': {
+        const ret = await db.returns.get(payload.id);
+        if (ret) {
+          for (const it of ret.items) {
+            if (it.condition !== 'restock') continue;
+            await recordMovement({ id: `${ret.id}:${it.productId}:refused`, productId: it.productId, delta: -it.qty, reason: 'refused', ref: ret.id, at: Date.now(), locationId: ret.locationId });
+          }
+          await db.returns.delete(ret.id);
+        }
+        break;
+      }
+      case 'journal:create':
+        await db.journals.delete(payload.id);
+        break;
       default:
     }
   });
@@ -198,12 +298,14 @@ export async function undoRefused(entity: string, op: string, payload: Record<st
  * Stock numbers are unaffected: they come from movements, which stay.
  */
 export async function purgeForCashier(): Promise<void> {
-  await db.transaction('rw', [db.products, db.suppliers, db.purchases], async () => {
+  const sensitive = ['expenses', 'journals', 'customerPayments', 'payslips', 'assets', 'budgets', 'approvals', 'bankAccounts', 'bankTransactions', 'saleDocuments', 'employees', 'productionOrders'];
+  await db.transaction('rw', db.tables, async () => {
     for (const p of await db.products.toArray()) {
       if (p.cost || p.costAt) await db.products.put({ ...p, cost: 0, costAt: undefined });
     }
     await db.suppliers.clear();
     await db.purchases.clear();
+    for (const name of sensitive) await db.table(name).clear();
   });
 }
 

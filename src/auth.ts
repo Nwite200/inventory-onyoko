@@ -1,4 +1,4 @@
-import { config } from './config';
+import { config, saveConfig } from './config';
 import type { Role } from './voice/agent';
 import { purgeForCashier, wipeLocalData } from './syncApply';
 
@@ -93,7 +93,20 @@ async function finish(r: LoginReply): Promise<Session> {
   if (s.businessId) localStorage.setItem(bizKey, s.businessId);
   if (s.role === 'cashier') await purgeForCashier();
   setSession(s);
+  await refreshPolicy();
   return s;
+}
+
+/** Reads the server's approval policy so the till and the server enforce the same threshold. */
+export async function refreshPolicy(): Promise<void> {
+  const s = getSession();
+  if (!s) return;
+  try {
+    const p = await api<{ approvalThreshold: number }>('GET', '/api/policy', undefined, s.token);
+    if (Number.isFinite(p.approvalThreshold)) saveConfig({ approvalThreshold: Math.max(0, p.approvalThreshold) });
+  } catch {
+    /* offline: keep the last known policy */
+  }
 }
 
 export async function login(username: string, password: string): Promise<Session> {

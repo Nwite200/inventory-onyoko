@@ -18,6 +18,8 @@ export type Intent =
   | { type: 'transfer'; items: ItemSpec[]; shop: string }
   | { type: 'receive_transfer'; from?: string }
   | { type: 'report_today' }
+  | { type: 'business_summary' }
+  | { type: 'top_products' }
   | { type: 'low_stock' }
   | { type: 'expiring' }
   | { type: 'confirm' }
@@ -263,6 +265,12 @@ export function parseCommand(raw: string): Intent {
   }
   if (/(?:what|how much).*\b(?:sold|sell|sales|made)\b|\b(?:today'?s|sales)\s+(?:sales|report|total|today)|sales report/.test(t)) {
     return { type: 'report_today' };
+  }
+  if (/\b(?:top|best)\b.*\b(?:sell|product)|most sold|best sellers?\b/.test(t)) {
+    return { type: 'top_products' };
+  }
+  if (/\b(?:summari[sz]e|summary|performance|how (?:is|are) (?:the )?business|profit|doing)\b/.test(t)) {
+    return { type: 'business_summary' };
   }
 
   // check stock

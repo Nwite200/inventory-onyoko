@@ -1,20 +1,73 @@
 # OpenPOS
 
-An offline-first, white-label point of sale and inventory app (React + TypeScript PWA) with a voice assistant.
-All code is original; it is a clean-room build, not a copy of any existing POS.
+An offline-first, white-label point of sale, inventory and accounting platform (React + TypeScript
+PWA + Node/SQLite sync server). All code is original; it is a clean-room build, not a copy of any
+existing POS.
+
+See `docs/AUDIT.md` for the architecture review, `docs/UI-UX-AUDIT-2026.md` for this redesign,
+`docs/PHASE-1-REPORT.md` and `docs/PHASE-5-8-REPORT.md` for delivery notes, and
+`docs/DEPLOYMENT.md` for hosting. Screenshots: `docs/screenshots/`.
 
 ## Run it
 
 ```bash
 npm install
 npm run dev        # development
-npm test           # 226 tests (voice, offline speech model, server, multi-shop sync, receipt printer, browser-compatibility guard)
+npm test           # 272 tests (264 pass, 8 environment-dependent skips)
 npm run get-model  # one-time: install the offline speech model (about 100 MB) for on-device voice
 npm run build      # production build in dist/ (installable PWA)
 npm run preview    # serve the production build
 ```
 
-Open the app, go to **Settings → Load demo data**, then try the **Assistant** button.
+Open the app, go to **Settings → Load demo data**, then try the **Assistant** icon in the top bar.
+
+## Latest build
+
+- **Premium application shell** — deep-navy sidebar, indigo accent, inline SVG icons, light/dark
+  themes, command palette (`⌘K`), branch selector, notification centre, mobile bottom navigation.
+- **Business dashboard** — net sales, gross/net profit, cash position, payment mix, best sellers,
+  low stock, receivables/payables and recent tickets from real local data, with range and branch
+  filters and dependency-free SVG charts.
+- **Rebuilt POS** — category filtering, held sales, cart discounts (% or amount), cash/change,
+  payment methods, F2/F4 shortcuts, mobile cart CTA and a redesigned receipt. Sale lines capture
+  the cost at sale time so profit is historically accurate.
+- **Refund integrity** — refunds cannot exceed what was sold (including earlier refunds), voided
+  sales are refused, restock movements are idempotent, and the server re-checks the same rules.
+- **Double-entry accounting** — chart of accounts, automatic balanced postings from sales,
+  purchases, supplier payments, expenses, refunds and stock adjustments, manual journals with
+  validations and reversals, trial balance, profit & loss, balance sheet, account ledger and CSV
+  export. Accounting/expenses are hidden from cashiers.
+- **New reporting centre** — sales trend, payment mix, product and category performance, stock and
+  expiry, branch comparison, CSV/print, and explicit sync status on the figures.
+- **Sync coverage** — expenses, refunds, cash-register shifts and journals now sync; retries are
+  idempotent; cashiers never receive cost prices, expenses or journals.
+- **Catalogue and sales screens** — searchable/filterable product catalogue with inline pricing,
+  stock adjustments and batches; full sales ledger with filters, receipts, voiding and CSV.
+- **Serial-enforced POS** — products can require a serial for every unit; the till blocks a sale without one, and voids/refunds return or damage the exact serial.
+- **Bin-enforced picking** — managers can require products with binned stock to be sold from those bins; the till blocks an over-pick and records the bin source.
+- **Server-verified approvals** — set `APPROVAL_THRESHOLD` on the server; refunds and voids above it are rejected unless an approved request from a manager exists.
+- **Foreign-currency purchasing** — receive goods in a configured currency; costs, stock valuation and payables are stored in base currency with the foreign amount retained.
+- **Advanced operations suite** — warehouse bins and picking, serial numbers, multi-component BOMs
+  and production orders, fixed assets with straight-line depreciation, budgets with variance,
+  payroll and payslips, currency rates, tax rules, bank reconciliation and an approval queue.
+- **Documents and credit** — quotations and sales orders with conversion to sales, customer
+  payments allocated to invoices, and printable customer statements.
+- **POS upgrades** — split payments, tax-inclusive/exclusive totals, foreign-currency tenders and
+  a camera barcode scanner with manual fallback.
+- **Platform administration** — a separate super-owner workspace for tenant metadata, sync volume,
+  health and audit events, never exposing tenant business data.
+- **Branding & receipts studio** — application/business identity, logos, colors, contact details,
+  navigation customization, live thermal receipt (58/80 mm, three templates), QR codes and an A4
+  invoice designer with print-to-PDF. A4 invoices can be printed from the sales ledger.
+- **Copilot** — floating assistant, persistent conversation, suggestions, offline indicator,
+  deterministic commands for sales/stock/purchases/transfers/reports, confirmation previews and
+  audit logging. Online reasoning is proxied by the server so provider keys never reach the browser.
+- **Navigation studio** — hide, reorder and preview sidebar items, with permission-aware filtering.
+- **Dedicated categories, branches and employees screens** — plus quotations and stock transfers in
+  primary navigation.
+- **Extended approvals** — refunds, voids, expenses, stock adjustments and journals all support the
+  threshold/approval queue, enforced locally and by the server where the amount is known.
+- **Exports** — CSV, Excel (`.xls`) and print-to-PDF across sales, reports and accounting.
 
 ## What works today
 
@@ -58,7 +111,7 @@ Or with Docker: `docker compose up -d` (data is kept in a volume).
 - **Offline still works.** Sales are saved on the device first and sent when the connection is back. A device that was offline catches up on its own.
 - **Real roles.** Roles come from the account and are enforced **on the server**: a cashier can sell but cannot push price, stock or product changes, even with a modified app, and does not receive cost prices. A cashier can void only their own sale made in the last 5 minutes (this is what voice "undo" needs). Sign-ins are rate-limited; disabling an account cuts that device off at its next sync.
 - **Two devices selling the same stock** both end up correct, because stock is recorded as events (+10, -2...) and added up, never overwritten. Retries never duplicate anything. For prices, the latest change wins.
-- Set `AUTH_SECRET`, `ADMIN_USER`/`ADMIN_PASSWORD`, `PORT`, `DB_PATH` as environment variables if you need to.
+- Set `AUTH_SECRET`, `ADMIN_USER`/`ADMIN_PASSWORD`, `PORT`, `DB_PATH`, `APPROVAL_THRESHOLD` (base-currency amount above which refunds/voids need an approved manager request) as environment variables if you need to.
 - **HTTPS on the shop network** (needed for voice, offline voice, app install and direct printing on other devices):
   1. On the server computer run `node scripts/make-cert.mjs` once (needs `openssl`; add your server's address if it is not detected, e.g. `node scripts/make-cert.mjs 192.168.1.20`). Restart the server: it now serves **https** on the main port, and a plain-http page on the next port (8788) with the certificate download and step-by-step install for Android, iPhone, Windows, Mac and Firefox.
   2. On each device open `http://<server>:8788`, install the certificate, then open the https address.
@@ -92,6 +145,10 @@ How it works: it listens until you pause, then the model writes down what you sa
 9. A change the server refuses (for example a cashier's stock adjustment) is taken back out on that device, and recorded in the audit log.
 10. Voice for purchases, suppliers and transfers works for the phrasings above (tested with typed text through the same parser; real accents and unusual wording are untested like the rest of voice). Anything it does not understand is simply not done, and every action is read back and needs "yes".
 11. Expiry batches record only quantity and date; there is no per-batch selling (the oldest is assumed sold first). Voice cannot add batches. Business names and users are managed by the server owner only; there is no way to delete a business yet.
+12. **Accounting is derived and consolidated.** Sales, purchases, expenses and refunds post automatically and always balance. Manual journals are business-wide (they are not allocated to a branch). Voided sales/purchases are excluded rather than reversed with a credit note, and supplier refunds/customer payment allocation are not yet modelled.
+13. **Refunds** are limited to the quantity sold and are re-checked on the server, but there is no separate manager approval step. Refund totals use the line price; a discount is not apportioned back across returned lines.
+14. **Advanced modules are deliberately scoped.** Bin picking is enforced only when the manager turns on the policy; serial tracking is enforced only for products marked “Track serial numbers”; manufacturing is single-level; payroll uses flat percentages; multi-currency covers POS tenders and purchases (not expenses); bank reconciliation uses manual statement lines; PDF is print-to-PDF and Excel is an HTML `.xls` workbook. Server-verified approvals apply when `APPROVAL_THRESHOLD` is set; without it the local policy is off.
+15. **Platform admin** shows tenant metadata only and can create businesses. It does not yet include subscription billing, background task control or backup restore. It appears only when signed in to a server as the platform owner.
 
 ## Deploying for a client
 
@@ -105,14 +162,20 @@ Receipt, purchase and transfer numbers include a short code for the device that 
 ```
 src/db.ts          IndexedDB schema (Dexie)
 src/actions.ts     every state change (screens and voice both call these)
+src/analytics.ts   reporting queries (pure, tested)
+src/accounting.ts  double-entry posting and financial statements
+src/returns.ts     refund rules and idempotent restocking
 src/sync.ts        push/pull with the server
 src/syncApply.ts   applies other devices' changes safely
 src/auth.ts        client login
 server/            Node + SQLite API: accounts, roles, change log
 src/voice/         parser, matcher, agent, LLM fallback, speech
-src/screens/       POS, Products, Purchases, Transfers, Sales, Reports, Settings, VoiceDock
+src/screens/       Dashboard, POS, Products, Sales, Returns, Purchases, Inventory,
+                   Contacts, Expenses, Accounting, CashRegister, Reports, Settings
+src/components/    inline SVG icons and dependency-free charts
 src/purchases.ts   suppliers and purchases
 src/transfers.ts   moving goods between shops
 src/location.ts    shops; src/stock.ts is the one place stock numbers change
 src/printing/      ESC/POS encoder, receipt layout, USB/serial/Bluetooth/RawBT transports
+docs/              audit, delivery report, screenshots
 ```

@@ -24,8 +24,8 @@ export default defineConfig({
         description: 'Offline-first point of sale with a voice inventory assistant',
         start_url: '/',
         display: 'standalone',
-        background_color: '#ffffff',
-        theme_color: '#0f766e',
+        background_color: '#f4f6fa',
+        theme_color: '#0a1024',
         icons: [{ src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
       },
       workbox: {

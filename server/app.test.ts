@@ -335,3 +335,199 @@ describe('expiry lots', () => {
     expect(seen.some((c) => c.entity === 'lot' && c.payload.id === 'lotA' && c.payload.batchNo === 'B1')).toBe(true);
   });
 });
+
+describe('expenses, refunds, registers and journals sync', () => {
+  const push = (items: unknown[], token: string, deviceId = 'dev-fin') => call('POST', '/api/sync', { deviceId, items }, token);
+
+  it('accepts expenses, register shifts and balanced journals; refuses an unbalanced journal', async () => {
+    const expense = {
+      id: 9001, entity: 'expense', op: 'create', at: clock,
+      payload: { id: 'exp1', category: 'Rent & Lease', amount: 250, paymentMethod: 'cash', at: clock, locationId: 'main' },
+    };
+    expect((await push([expense], manager)).body.accepted).toEqual([9001]);
+
+    const register = {
+      id: 9002, entity: 'cash_register', op: 'open', at: clock,
+      payload: { id: 'reg1', userId: 'amaka', locationId: 'main', openedAt: clock, openingCash: 1000, status: 'open' },
+    };
+    expect((await push([register], cashier)).body.accepted).toEqual([9002]);
+
+    const balanced = {
+      id: 9003, entity: 'journal', op: 'create', at: clock,
+      payload: {
+        id: 'je1', number: 'JE-1', date: clock, memo: 'Owner capital',
+        lines: [{ account: '1010', debit: 500, credit: 0 }, { account: '3000', debit: 0, credit: 500 }],
+      },
+    };
+    expect((await push([balanced], manager)).body.accepted).toEqual([9003]);
+
+    const unbalanced = {
+      ...balanced, id: 9004,
+      payload: { ...balanced.payload, id: 'je2', lines: [{ account: '1010', debit: 500, credit: 0 }, { account: '3000', debit: 0, credit: 400 }] },
+    };
+    const bad = await push([unbalanced], manager);
+    expect(bad.body.rejected).toHaveLength(1);
+    expect(bad.body.rejected[0].reason).toMatch(/not balanced/);
+  });
+
+  it('lets a cashier refund, but never more than the sale contains or already refunded', async () => {
+    const original = {
+      id: 9100, entity: 'sale', op: 'create', at: clock,
+      payload: { id: 's-ref', items: [{ productId: 'p1', qty: 3, price: 100 }], total: 300 },
+    };
+    expect((await push([original], manager, 'dev-fin-m')).body.accepted).toEqual([9100]);
+
+    const refund = (id: number, qty: number) => ({
+      id, entity: 'sale_return', op: 'create', at: clock,
+      payload: {
+        id: `ret-${id}`, number: `RET-${id}`, saleId: 's-ref', saleNumber: 'INV-1', at: clock,
+        customerName: 'Walk-in', totalRefunded: qty * 100, paymentMethod: 'cash',
+        items: [{ productId: 'p1', name: 'Rice', qty, unitPrice: 100, refundAmount: qty * 100, condition: 'restock' }],
+      },
+    });
+
+    expect((await push([refund(9110, 2)], cashier, 'dev-fin-c')).body.accepted).toEqual([9110]);
+    const excess = await push([refund(9111, 2)], cashier, 'dev-fin-c');
+    expect(excess.body.rejected).toHaveLength(1);
+    expect(excess.body.rejected[0].reason).toMatch(/exceeds/);
+    expect((await push([refund(9112, 1)], cashier, 'dev-fin-c')).body.accepted).toEqual([9112]);
+
+    // retrying the very same change is accepted, not applied twice
+    expect((await push([refund(9110, 2)], cashier, 'dev-fin-c')).body.accepted).toEqual([9110]);
+  });
+
+  it('keeps financial detail away from cashiers while still syncing refunds', async () => {
+    const deniedJournal = {
+      id: 9200, entity: 'journal', op: 'create', at: clock,
+      payload: { id: 'je3', number: 'JE-3', date: clock, memo: 'x', lines: [{ account: '1010', debit: 1, credit: 0 }, { account: '3000', debit: 0, credit: 1 }] },
+    };
+    const deniedExpense = { id: 9201, entity: 'expense', op: 'create', at: clock, payload: { id: 'exp2', category: 'Misc', amount: 6, paymentMethod: 'cash', at: clock } };
+    expect((await push([deniedJournal, deniedExpense], cashier)).body.rejected).toHaveLength(2);
+
+    const entities: string[] = [];
+    let since = 0;
+    for (;;) {
+      const page = (await call('GET', `/api/sync?since=${since}&deviceId=cash-dev-2`, undefined, cashier)).body;
+      entities.push(...(page.changes as any[]).map((c) => c.entity));
+      since = page.cursor;
+      if (!page.hasMore) break;
+    }
+    expect(entities).not.toContain('expense');
+    expect(entities).not.toContain('journal');
+    expect(entities).toContain('sale_return');
+  });
+});
+
+describe('response hardening', () => {
+  it('sets browser security headers and keeps API responses out of caches', async () => {
+    const res = await fetch(base + '/api/health');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('advanced records and platform administration', () => {
+  const push = (items: unknown[], token: string, deviceId = 'dev-adv') => call('POST', '/api/sync', { deviceId, items }, token);
+
+  it('syncs advanced records for managers and hides them from cashiers', async () => {
+    const bin = { id: 9301, entity: 'advanced', op: 'upsert', at: clock, payload: { table: 'bins', record: { id: 'bin-1', code: 'A-01', locationId: 'main', at: clock } } };
+    expect((await push([bin], manager)).body.accepted).toEqual([9301]);
+    expect((await push([{ ...bin, id: 9302, payload: { ...bin.payload, record: { ...bin.payload.record, id: 'bin-2' } } }], cashier)).body.rejected).toHaveLength(1);
+    const bad = { id: 9303, entity: 'advanced', op: 'upsert', at: clock, payload: { table: 'users', record: { id: 'x' } } };
+    expect((await push([bad], manager)).body.rejected).toHaveLength(1);
+
+    let since = 0;
+    const changes: any[] = [];
+    for (;;) {
+      const page = (await call('GET', `/api/sync?since=${since}&deviceId=cash-adv`, undefined, cashier)).body;
+      changes.push(...(page.changes as any[]));
+      since = page.cursor;
+      if (!page.hasMore) break;
+    }
+    const advancedTables = changes.filter((c) => c.entity === 'advanced').map((c) => c.payload.table);
+    expect(advancedTables).toContain('bins'); // a till needs bin locations
+    expect(advancedTables).not.toContain('approvals');
+    expect(advancedTables).not.toContain('customerPayments');
+  });
+
+  it('exposes platform metadata only to the platform owner, without tenant payloads', async () => {
+    expect((await call('GET', '/api/admin/overview', undefined, manager)).status).toBe(403);
+    expect((await call('GET', '/api/admin/audit', undefined, manager)).status).toBe(403);
+    const overview = await call('GET', '/api/admin/overview', undefined, admin);
+    expect(overview.status).toBe(200);
+    expect(overview.body.totals.businesses).toBeGreaterThanOrEqual(2);
+    expect(overview.body.health.node).toMatch(/^v\d+/);
+    const audit = await call('GET', '/api/admin/audit?limit=10', undefined, admin);
+    expect(audit.status).toBe(200);
+    expect(audit.body.events.length).toBeLessThanOrEqual(10);
+    expect(audit.body.events[0]).toHaveProperty('entity');
+    expect(audit.body.events[0]).not.toHaveProperty('payload');
+  });
+});
+
+describe('server-verified approvals', () => {
+  let srv: Server;
+  let b = '';
+  let token = '';
+  const push = (items: unknown[], deviceId = 'dev-appr') => call2('POST', '/api/sync', { deviceId, items }, token);
+  async function call2(method: string, path: string, body?: unknown, bearer?: string) {
+    const res = await fetch(b + path, { method, headers: { 'Content-Type': 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: res.status, body: (await res.json()) as Record<string, any> };
+  }
+
+  beforeAll(async () => {
+    const s = createServer(createApp({ db: openDb(':memory:'), secret: 'approval-secret', now: () => clock, approvalThreshold: 100 }));
+    srv = s;
+    await new Promise<void>((r) => s.listen(0, r));
+    b = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+    const setup = await call2('POST', '/api/auth/setup', { username: 'owner2', password: 'approval-pass' });
+    token = setup.body.token;
+  });
+  afterAll(() => srv.close());
+
+  it('publishes the policy and rejects a refund until an approved request exists', async () => {
+    const policy = await call2('GET', '/api/policy', undefined, token);
+    expect(policy.body.approvalThreshold).toBe(100);
+    await push([{ id: 1, entity: 'sale', op: 'create', at: clock, payload: { id: 'big-sale', items: [{ productId: 'p', qty: 1, price: 500 }], total: 500 } }]);
+    const refund = (id: number) => ({ id, entity: 'sale_return', op: 'create', at: clock, payload: { id: `ret-${id}`, number: `RET-${id}`, saleId: 'big-sale', saleNumber: 'INV-BIG', at: clock, customerName: 'Ada', totalRefunded: 500, paymentMethod: 'cash', items: [{ productId: 'p', name: 'Item', qty: 1, unitPrice: 500, refundAmount: 500, condition: 'restock' }] } });
+    expect((await push([refund(10)])).body.rejected[0].reason).toMatch(/approved manager/);
+    const approval = { id: 11, entity: 'advanced', op: 'upsert', at: clock, payload: { table: 'approvals', record: { id: 'appr-1', kind: 'refund', entityId: 'big-sale', summary: 'Refund', amount: 500, requestedBy: 'till', status: 'approved', decidedBy: 'owner2', requestedAt: clock, decidedAt: clock } } };
+    expect((await push([approval])).body.accepted).toEqual([11]);
+    expect((await push([refund(12)])).body.accepted).toEqual([12]);
+  });
+
+  it('applies the policy to expenses and journals', async () => {
+    const expense = (id: number) => ({ id, entity: 'expense', op: 'create', at: clock, payload: { id: 'exp-big', category: 'Utilities', amount: 500, paymentMethod: 'cash', at: clock, locationId: 'main' } });
+    expect((await push([expense(30)])).body.rejected[0].reason).toMatch(/approved manager/);
+    const approval = { id: 31, entity: 'advanced', op: 'upsert', at: clock, payload: { table: 'approvals', record: { id: 'appr-exp', kind: 'expense', entityId: 'exp-big', summary: 'Utilities', amount: 500, requestedBy: 'mgr', status: 'approved', decidedBy: 'owner2', requestedAt: clock, decidedAt: clock } } };
+    expect((await push([approval])).body.accepted).toEqual([31]);
+    expect((await push([expense(32)])).body.accepted).toEqual([32]);
+
+    const journal = (id: number, key: string) => ({ id, entity: 'journal', op: 'create', at: clock, payload: { id: `je-${id}`, number: `JE-${id}`, date: clock, memo: 'Adjustment', approvalKey: key, lines: [{ account: '1010', debit: 500, credit: 0 }, { account: '3000', debit: 0, credit: 500 }] } });
+    expect((await push([journal(33, 'jkey')])).body.rejected[0].reason).toMatch(/approved manager/);
+    const japproval = { id: 34, entity: 'advanced', op: 'upsert', at: clock, payload: { table: 'approvals', record: { id: 'appr-j', kind: 'journal', entityId: 'jkey', summary: 'Adjustment', amount: 500, requestedBy: 'mgr', status: 'approved', decidedBy: 'owner2', requestedAt: clock, decidedAt: clock } } };
+    expect((await push([japproval])).body.accepted).toEqual([34]);
+    expect((await push([journal(35, 'jkey')])).body.accepted).toEqual([35]);
+  });
+
+  it('applies the same rule to voids', async () => {
+    await push([{ id: 20, entity: 'sale', op: 'create', at: clock, payload: { id: 'void-sale', items: [{ productId: 'p', qty: 1, price: 500 }], total: 500 } }]);
+    const voidOne = (id: number) => ({ id, entity: 'sale', op: 'void', at: clock, payload: { id: 'void-sale' } });
+    expect((await push([voidOne(21)])).body.rejected[0].reason).toMatch(/approved manager/);
+    const approval = { id: 22, entity: 'advanced', op: 'upsert', at: clock, payload: { table: 'approvals', record: { id: 'appr-2', kind: 'void', entityId: 'void-sale', summary: 'Void', amount: 500, requestedBy: 'till', status: 'approved', decidedBy: 'owner2', requestedAt: clock, decidedAt: clock } } };
+    expect((await push([approval])).body.accepted).toEqual([22]);
+    expect((await push([voidOne(23)])).body.accepted).toEqual([23]);
+  });
+});
+
+describe('AI proxy', () => {
+  it('requires sign-in and keeps provider keys on the server', async () => {
+    expect((await call('POST', '/api/ai/parse', { text: 'sell two rice' })).status).toBe(401);
+    const r = await call('POST', '/api/ai/parse', { text: 'sell two rice' }, admin);
+    expect(r.status).toBe(503);
+    expect(JSON.stringify(r.body)).not.toMatch(/AIza[0-9A-Za-z_-]{20,}/);
+    expect(JSON.stringify(r.body)).not.toContain('geminiKey');
+  });
+});

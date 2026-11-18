@@ -39,6 +39,7 @@ export function openDb(path: string): DatabaseSync {
   if (!has('users', 'business_id')) db.exec("ALTER TABLE users ADD COLUMN business_id TEXT NOT NULL DEFAULT 'main'");
   if (!has('users', 'is_super')) db.exec('ALTER TABLE users ADD COLUMN is_super INTEGER NOT NULL DEFAULT 0');
   if (!has('changes', 'business_id')) db.exec("ALTER TABLE changes ADD COLUMN business_id TEXT NOT NULL DEFAULT 'main'");
+  if (!has('businesses', 'branding')) db.exec("ALTER TABLE businesses ADD COLUMN branding TEXT NOT NULL DEFAULT '{}'");
   db.exec('CREATE INDEX IF NOT EXISTS changes_business_seq ON changes (business_id, seq)');
   // a server that was running before businesses existed: everything belongs to business "main",
   // and its first admin becomes the platform owner (the one who may add more businesses)

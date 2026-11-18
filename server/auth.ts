@@ -46,6 +46,10 @@ export function canPush(role: Role, entity: string, op: string): 'yes' | 'no' | 
   // cashier
   if (entity === 'sale' && op === 'create') return 'yes';
   if (entity === 'customer' && op === 'create') return 'yes';
+  // a till can refund, open and close its own register, but cannot post expenses or journals
+  if (entity === 'sale_return' && op === 'create') return 'yes';
+  if (entity === 'cash_register' && (op === 'open' || op === 'close')) return 'yes';
+  if (entity === 'advanced') return 'no';
   // voice "undo" lets a cashier cancel a sale they just made; the server checks that below
   if (entity === 'sale' && op === 'void') return 'check-void';
   return 'no';

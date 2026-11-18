@@ -25,13 +25,18 @@ export interface ReceiveInput {
   supplierId?: string;
   supplierName?: string;
   items: { productId: string; qty: number; cost: number; batchNo?: string; expiresAt?: number }[];
-  /** Money paid to the supplier now. Anything unpaid stays as "owed". */
+  /** Money paid to the supplier now, in base currency. Anything unpaid stays as "owed". */
   paid?: number;
   note?: string;
+  /** When set, item costs were entered in this currency and are converted to base for the ledger. */
+  currency?: string;
+  fxRate?: number;
 }
 
 export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
   if (input.items.length === 0) throw new Error('Add at least one product');
+  const rate = input.currency ? Number(input.fxRate) : 1;
+  if (input.currency && !(rate > 0)) throw new Error('A foreign purchase needs a valid exchange rate');
   for (const it of input.items) {
     if (!(it.qty > 0)) throw new Error('Quantity must be more than zero');
     if (!(it.cost >= 0)) throw new Error('Cost must be zero or more');
@@ -45,7 +50,12 @@ export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
       const p = await db.products.get(it.productId);
       if (!p) throw new Error('A product in this purchase no longer exists');
       const batchNo = it.batchNo?.trim();
-      lines.push({ productId: p.id, name: p.name, qty: it.qty, cost: it.cost, ...(batchNo ? { batchNo } : {}), ...(it.expiresAt ? { expiresAt: it.expiresAt } : {}) });
+      const baseCost = Math.round(it.cost * rate * 100) / 100;
+      lines.push({
+        productId: p.id, name: p.name, qty: it.qty, cost: baseCost,
+        ...(rate !== 1 ? { foreignCost: it.cost } : {}),
+        ...(batchNo ? { batchNo } : {}), ...(it.expiresAt ? { expiresAt: it.expiresAt } : {}),
+      });
     }
     const total = lines.reduce((s, l) => s + l.qty * l.cost, 0);
     const paid = Math.min(Math.max(input.paid ?? 0, 0), total);
@@ -65,6 +75,7 @@ export async function receivePurchase(input: ReceiveInput): Promise<Purchase> {
       status: 'received',
       locationId: currentLocationId(),
       ...(input.note?.trim() ? { note: input.note.trim() } : {}),
+      ...(input.currency ? { currency: input.currency, fxRate: rate, foreignTotal: Math.round((total / rate) * 100) / 100 } : {}),
     };
     await db.purchases.add(purchase);
     for (const l of lines) {
